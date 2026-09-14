@@ -20,7 +20,7 @@ ZIP = f"{BASE}/partof_BP3D_4.0_obj_99.zip"
 UA = {"User-Agent": "coronary-ecg-lab mesh build script"}
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE = os.path.join(ROOT, "tools", ".cache")
-OUT = os.path.join(ROOT, "models")
+OUT = os.path.join(ROOT, "public", "models")   # Vite copies public/ verbatim
 
 # Matches the procedural model so both can be compared in the same frame.
 LV_TOP, LV_BOT = 2.7, -6.0

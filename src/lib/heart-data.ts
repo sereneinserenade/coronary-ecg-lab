@@ -1,18 +1,35 @@
 /* Clinical data and pure signal maths for the heart lab.
- * No Three.js, no DOM — so it can be unit-tested in Node (see test_heart.mjs). */
+ * No Three.js, no DOM, no Solid — so it can be unit-tested on its own. */
 
 /* ------------------------------------------------------------------ *
- * 1. CLINICAL DATA
+ * 1. LEADS AND MORPHOLOGY
  * ------------------------------------------------------------------ */
 
-export const LEADS = ['I', 'II', 'III', 'aVR', 'aVL', 'aVF', 'V1', 'V2', 'V3', 'V4', 'V5', 'V6'];
+export type LimbLead = 'I' | 'II' | 'III' | 'aVR' | 'aVL' | 'aVF';
+export type ChestLead = 'V1' | 'V2' | 'V3' | 'V4' | 'V5' | 'V6';
+export type ExtraLead = 'V4R' | 'V7' | 'V8' | 'V9';
+export type Lead = LimbLead | ChestLead | ExtraLead;
 
-// Leads recorded only when the story calls for them: V4R for the right ventricle,
-// V7-V9 for the posterior wall. Both are in the Fourth Universal Definition.
-export const EXTRA_LEADS = ['V4R', 'V7', 'V8', 'V9'];
+/** A lead's deflection amplitudes, in mV. */
+export interface Morph {
+  p: number;
+  q: number;
+  r: number;
+  s: number;
+  t: number;
+}
 
-export const CHEST_LEADS = ['V1', 'V2', 'V3', 'V4', 'V5', 'V6'];
-export const LIMB_LEADS = ['I', 'II', 'III', 'aVR', 'aVL', 'aVF'];
+const DEFLECTIONS = ['p', 'q', 'r', 's', 't'] as const;
+
+export const LEADS: Lead[] = ['I', 'II', 'III', 'aVR', 'aVL', 'aVF', 'V1', 'V2', 'V3', 'V4', 'V5', 'V6'];
+
+/** Recorded only when the story calls for them: V4R for the right ventricle,
+ *  V7-V9 for the posterior wall. Both are in the Fourth Universal Definition. */
+export const EXTRA_LEADS: ExtraLead[] = ['V4R', 'V7', 'V8', 'V9'];
+
+export const CHEST_LEADS: ChestLead[] = ['V1', 'V2', 'V3', 'V4', 'V5', 'V6'];
+export const LIMB_LEADS: LimbLead[] = ['I', 'II', 'III', 'aVR', 'aVL', 'aVF'];
+export const ALL_LEADS: Lead[] = [...LEADS, ...EXTRA_LEADS];
 
 /* The frontal plane has only two degrees of freedom. Einthoven wired the three
  * bipolar leads into one triangle and Goldberger derived the three augmented
@@ -24,77 +41,184 @@ export const LIMB_LEADS = ['I', 'II', 'III', 'aVR', 'aVL', 'aVF'];
  * Typing six independent limb morphologies produces an ECG that cannot exist.
  * So only I and II are data here; the other four are computed, and the same
  * rule is applied again to the ST shift, which keeps reciprocal change honest. */
-const DERIVE_LIMB = {
+type DerivedLimb = 'III' | 'aVR' | 'aVL' | 'aVF';
+
+const DERIVE_LIMB: Record<DerivedLimb, (a: number, b: number) => number> = {
   III: (a, b) => b - a,
   aVR: (a, b) => -(a + b) / 2,
   aVL: (a, b) => a - b / 2,
   aVF: (a, b) => b - a / 2,
 };
 
-export function deriveLimb(lead, mI, mII) {
+const isDerived = (lead: Lead): lead is DerivedLimb => lead in DERIVE_LIMB;
+
+export function deriveLimb(lead: DerivedLimb, mI: Morph, mII: Morph): Morph {
   const f = DERIVE_LIMB[lead];
-  const out = {};
-  for (const k of ['p', 'q', 'r', 's', 't']) out[k] = f(mI[k], mII[k]);
+  const out = {} as Morph;
+  for (const k of DEFLECTIONS) out[k] = f(mI[k], mII[k]);
   return out;
 }
 
-// Hexaxial reference system: where each frontal lead looks from, in degrees.
-export const LEAD_AXIS = { I: 0, II: 60, III: 120, aVR: -150, aVL: -30, aVF: 90 };
+/** Hexaxial reference system: where each frontal lead looks from, in degrees. */
+export const LEAD_AXIS: Record<LimbLead, number> = {
+  I: 0, II: 60, III: 120, aVR: -150, aVL: -30, aVF: 90,
+};
 
-// The augmented leads carry a gain of sqrt(3)/2 against the bipolar ones — which is
-// exactly what makes projection onto LEAD_AXIS agree with the Goldberger algebra above.
+export const isLimbLead = (lead: Lead): lead is LimbLead => lead in LEAD_AXIS;
+
+/* The augmented leads carry a gain of sqrt(3)/2 against the bipolar ones — which is
+ * exactly what makes projection onto LEAD_AXIS agree with the Goldberger algebra above. */
 const AUG = Math.sqrt(3) / 2;
-export const LEAD_GAIN = { I: 1, II: 1, III: 1, aVR: AUG, aVL: AUG, aVF: AUG };
+export const LEAD_GAIN: Record<LimbLead, number> = {
+  I: 1, II: 1, III: 1, aVR: AUG, aVL: AUG, aVF: AUG,
+};
 
-// A dipole of magnitude `amp` pointing along `axisDeg`, read by one frontal lead.
-export function project(amp, axisDeg, lead) {
-  return amp * LEAD_GAIN[lead] * Math.cos((LEAD_AXIS[lead] - axisDeg) * Math.PI / 180);
+/** A dipole of magnitude `amp` pointing along `axisDeg`, read by one frontal lead. */
+export function project(amp: number, axisDeg: number, lead: LimbLead): number {
+  return amp * LEAD_GAIN[lead] * Math.cos(((LEAD_AXIS[lead] - axisDeg) * Math.PI) / 180);
 }
 
 /* Normal deflection amplitudes in mV.
  * I and II are seeded for a mean QRS axis near +45 deg; the rest of the frontal
  * plane falls out of deriveLimb, and the chest leads are independent measurements. */
 const SEED = {
-  I:  { p: 0.11, q: -0.03, r: 0.84, s: -0.07, t: 0.23 },
+  I: { p: 0.11, q: -0.03, r: 0.84, s: -0.07, t: 0.23 },
   II: { p: 0.15, q: -0.04, r: 1.15, s: -0.10, t: 0.32 },
-};
+} satisfies Record<'I' | 'II', Morph>;
 
-export const MORPH = {
+export const MORPH: Record<Lead, Morph> = {
   ...SEED,
-  ...Object.fromEntries(Object.keys(DERIVE_LIMB).map((l) => [l, deriveLimb(l, SEED.I, SEED.II)])),
-  V1:  { p: 0.08, q: 0.00, r: 0.20, s: -1.05, t: -0.05 },
-  V2:  { p: 0.10, q: 0.00, r: 0.35, s: -1.50, t: 0.35 },
-  V3:  { p: 0.10, q: 0.00, r: 0.70, s: -1.00, t: 0.40 },
-  V4:  { p: 0.10, q: -0.04, r: 1.45, s: -0.55, t: 0.38 },
-  V5:  { p: 0.10, q: -0.06, r: 1.35, s: -0.25, t: 0.30 },
-  V6:  { p: 0.09, q: -0.05, r: 1.00, s: -0.12, t: 0.22 },
+  III: deriveLimb('III', SEED.I, SEED.II),
+  aVR: deriveLimb('aVR', SEED.I, SEED.II),
+  aVL: deriveLimb('aVL', SEED.I, SEED.II),
+  aVF: deriveLimb('aVF', SEED.I, SEED.II),
+  V1: { p: 0.08, q: 0.00, r: 0.20, s: -1.05, t: -0.05 },
+  V2: { p: 0.10, q: 0.00, r: 0.35, s: -1.50, t: 0.35 },
+  V3: { p: 0.10, q: 0.00, r: 0.70, s: -1.00, t: 0.40 },
+  V4: { p: 0.10, q: -0.04, r: 1.45, s: -0.55, t: 0.38 },
+  V5: { p: 0.10, q: -0.06, r: 1.35, s: -0.25, t: 0.30 },
+  V6: { p: 0.09, q: -0.05, r: 1.00, s: -0.12, t: 0.22 },
   // V4R faces the right ventricle: a small rS, like V1 but smaller still.
   V4R: { p: 0.06, q: 0.00, r: 0.16, s: -0.42, t: 0.09 },
   // V7-V9 run round the back under the scapula; R falls off as they go lateral.
-  V7:  { p: 0.07, q: -0.03, r: 0.62, s: -0.22, t: 0.16 },
-  V8:  { p: 0.06, q: -0.03, r: 0.50, s: -0.16, t: 0.14 },
-  V9:  { p: 0.05, q: -0.02, r: 0.40, s: -0.12, t: 0.12 },
+  V7: { p: 0.07, q: -0.03, r: 0.62, s: -0.22, t: 0.16 },
+  V8: { p: 0.06, q: -0.03, r: 0.50, s: -0.16, t: 0.14 },
+  V9: { p: 0.05, q: -0.02, r: 0.40, s: -0.12, t: 0.12 },
 };
+
+/** Who the ECG is being read for. Changes the V2/V3 and V4R thresholds only. */
+/* The two age cut-offs are not the same one. The Fourth Universal Definition
+ * raises the V2-V3 bar for men under 40, and the V4R bar for men under 30, so a
+ * man of 35 needs the higher precordial threshold and the ordinary V4R one. */
+export type Patient = 'man>=40' | 'man30-39' | 'man<30' | 'woman';
+
+export const PATIENTS: { id: Patient; label: string }[] = [
+  { id: 'man>=40', label: 'Man, 40 or over' },
+  { id: 'man30-39', label: 'Man, 30 to 39' },
+  { id: 'man<30', label: 'Man, under 30' },
+  { id: 'woman', label: 'Woman, any age' },
+];
+
+const YOUNG_MAN = new Set<Patient>(['man30-39', 'man<30']);
 
 /* Diagnostic J-point thresholds, Fourth Universal Definition of Myocardial
  * Infarction (2018), in mV. Two contiguous leads must clear the bar. */
-export const ST_THRESHOLD = {
-  limb: 0.1, chest: 0.1,
-  V2: { 'man>=40': 0.2, 'man<40': 0.25, woman: 0.15 },
-  V3: { 'man>=40': 0.2, 'man<40': 0.25, woman: 0.15 },
-  V4R: { 'man<30': 0.1, other: 0.05 },
-  posterior: 0.05,
-};
+export function stThreshold(lead: Lead, patient: Patient = 'man>=40'): number {
+  if (lead === 'V2' || lead === 'V3') {
+    if (patient === 'woman') return 0.15;
+    return YOUNG_MAN.has(patient) ? 0.25 : 0.2;
+  }
+  if (lead === 'V4R') return patient === 'man<30' ? 0.1 : 0.05;
+  if (lead === 'V7' || lead === 'V8' || lead === 'V9') return 0.05;
+  return 0.1;
+}
 
-export function stThreshold(lead, patient = 'man>=40') {
-  if (lead === 'V2' || lead === 'V3') return ST_THRESHOLD[lead][patient] ?? ST_THRESHOLD[lead]['man>=40'];
-  if (lead === 'V4R') return patient === 'man<30' ? ST_THRESHOLD.V4R['man<30'] : ST_THRESHOLD.V4R.other;
-  if (['V7', 'V8', 'V9'].includes(lead)) return ST_THRESHOLD.posterior;
-  return ST_THRESHOLD.limb;
+/* ------------------------------------------------------------------ *
+ * 2. CLINICAL DATA
+ * ------------------------------------------------------------------ */
+
+export type SegmentId =
+  | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
+  | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17;
+
+export type VesselId =
+  | 'LM' | 'LAD1' | 'LAD2' | 'LAD3' | 'D1' | 'D2' | 'S1' | 'S2' | 'S3' | 'RI'
+  | 'LCX1' | 'LCX2' | 'OM1' | 'OM2'
+  | 'RCA1' | 'RCA2' | 'RCA3' | 'AM' | 'CB' | 'RV1' | 'RV2'
+  | 'PDA' | 'PS1' | 'PS2' | 'PLV' | 'SAN' | 'AVN'
+  | 'CS' | 'GCV' | 'MCV' | 'SCV' | 'PVLV' | 'ACV';
+
+export type DominanceId = 'right' | 'left' | 'codominant';
+
+/** One step in the evolution of a transmural infarct. */
+export interface Stage {
+  id: number;
+  time: string;
+  short: string;
+  /** ST elevation at the J point, in mV, before the injury vector scales it. */
+  st: number;
+  /** Multiplier on the normal T wave. Negative inverts it. */
+  tMul: number;
+  /** Fraction of a full pathological Q wave. */
+  q: number;
+  ecg: string;
+  gross: string;
+  micro: string;
+  ttc: string;
+  risk: string;
+}
+
+/** The current-of-injury dipole: where it points and how far it reaches. */
+export interface Injury {
+  /** Bearing on the hexaxial system, in degrees. */
+  axis: number;
+  /** Scale against the stage's ST magnitude. */
+  amp: number;
+  /** Horizontal-plane leads, as fractions of the same magnitude. */
+  chest: Partial<Record<ChestLead | ExtraLead, number>>;
+}
+
+/** One occlusion, as authored (always the right-dominant case). */
+export interface ScenarioSpec {
+  id: string;
+  name: string;
+  wall: string;
+  artery: string;
+  dead: VesselId[];
+  segs: SegmentId[];
+  /** Textbook expectation, used by the tests to check the injury vector. */
+  expectElevate: Lead[];
+  expectDepress: Lead[];
+  rv: boolean;
+  subendo: boolean;
+  posterior?: boolean;
+  leads: string;
+  distinguish: string[];
+  gross: string;
+}
+
+/** A scenario with its derived lead labels, rate and injury vector attached. */
+export interface Scenario extends ScenarioSpec {
+  injury: Injury;
+  hr: number;
+  elevate: Lead[];
+  depress: Lead[];
+  extras: ExtraLead[];
+  dominance?: Dominance;
+}
+
+export interface Dominance {
+  id: DominanceId;
+  label: string;
+  prevalence: string;
+  pdaFrom: 'RCA' | 'LCX';
+  plvFrom: 'RCA' | 'LCX';
+  avnFrom: 'RCA' | 'LCX';
+  note: string;
 }
 
 // AHA 17-segment model.
-export const SEG_NAME = {
+export const SEG_NAME: Record<SegmentId, string> = {
   1: 'basal anterior', 2: 'basal anteroseptal', 3: 'basal inferoseptal', 4: 'basal inferior',
   5: 'basal inferolateral', 6: 'basal anterolateral',
   7: 'mid anterior', 8: 'mid anteroseptal', 9: 'mid inferoseptal', 10: 'mid inferior',
@@ -103,7 +227,7 @@ export const SEG_NAME = {
   17: 'apex',
 };
 
-export const TERRITORY = {
+export const TERRITORY: Record<'LAD' | 'RCA' | 'LCX', SegmentId[]> = {
   LAD: [1, 2, 7, 8, 13, 14, 17],
   RCA: [3, 4, 9, 10, 15],
   LCX: [5, 6, 11, 12, 16],
@@ -111,7 +235,10 @@ export const TERRITORY = {
 
 // Evolution of a transmural infarct. st = ST elevation in mV at the J point.
 // tMul scales the normal T wave (negative = inverted). q = fraction of a full pathological Q.
-export const STAGES = [
+
+// Evolution of a transmural infarct. st = ST elevation in mV at the J point.
+// tMul scales the normal T wave (negative = inverted). q = fraction of a full pathological Q.
+export const STAGES: Stage[] = [
   {
     id: 0, time: 'Normal', short: 'Baseline',
     st: 0, tMul: 1, q: 0,
@@ -205,7 +332,8 @@ export const STAGES = [
 ];
 
 // Occlusion scenarios. `dead` lists vessel ids that lose flow; `segs` the AHA segments infarcted.
-export const SCENARIOS = [
+// Occlusion scenarios. `dead` lists vessel ids that lose flow; `segs` the AHA segments infarcted.
+export const SCENARIO_SPECS: ScenarioSpec[] = [
   {
     id: 'none', name: 'No occlusion (normal)', wall: '—', artery: '—',
     dead: [], segs: [], expectElevate: [], expectDepress: [], rv: false, subendo: false,
@@ -351,8 +479,51 @@ export const SCENARIOS = [
     gross: 'On the short-axis slice a pale rim occupies the inner third to half of the wall, circumferentially, with the outer myocardium preserved. Contrast with a transmural infarct, which spans the full wall thickness in one territory.',
   },
 ];
+// Every vessel the 3D scene builds. Scenario `dead` lists must be a subset of this.
+export const VESSEL_IDS: VesselId[] = [
+  'LM', 'LAD1', 'LAD2', 'LAD3', 'D1', 'D2', 'S1', 'S2', 'S3', 'RI',
+  'LCX1', 'LCX2', 'OM1', 'OM2',
+  'RCA1', 'RCA2', 'RCA3', 'AM', 'CB', 'RV1', 'RV2', 'PDA', 'PS1', 'PS2', 'PLV', 'SAN', 'AVN',
+  'CS', 'GCV', 'MCV', 'SCV', 'PVLV', 'ACV',
+];
 
-
+/* What each coronary is called and what it feeds, for the model's own legend.
+ * `variant` notes how often the vessel is absent or arises elsewhere. */
+export const VESSEL_INFO: Record<VesselId, [name: string, note: string]> = {
+  LM: ['Left main', 'Left coronary sinus to the LAD/LCx bifurcation. 5-10 mm long; occlusion here is the widowmaker.'],
+  LAD1: ['Proximal LAD', 'Anterior interventricular groove, before the first septal and first diagonal.'],
+  LAD2: ['Mid LAD', 'Between the first diagonal and the apex.'],
+  LAD3: ['Distal LAD', 'Apical. Wraps round onto the inferior wall in about two thirds of hearts (type III).'],
+  D1: ['First diagonal', 'Anterolateral wall. Shares the anterolateral papillary muscle with OM1.'],
+  D2: ['Second diagonal', 'Mid anterolateral wall.'],
+  RI: ['Ramus intermedius', 'A third branch straight off the left main, between the LAD and the circumflex. Present in 15-30% of hearts.'],
+  S1: ['First septal perforator', 'Anterior two-thirds of the septum, plus the right bundle and the left anterior fascicle.'],
+  S2: ['Second septal perforator', 'Mid anterior septum.'],
+  S3: ['Third septal perforator', 'Apical septum.'],
+  LCX1: ['Proximal circumflex', 'Left atrioventricular groove, before the first obtuse marginal.'],
+  LCX2: ['Distal circumflex', 'Continues round the AV groove; reaches the crux only in a left-dominant heart.'],
+  OM1: ['First obtuse marginal', 'Lateral free wall. Second supply to the anterolateral papillary muscle.'],
+  OM2: ['Second obtuse marginal', 'Inferolateral wall.'],
+  RCA1: ['Proximal RCA', 'Right AV groove, before the acute marginal.'],
+  RCA2: ['Mid RCA', 'Between the acute marginal and the crux.'],
+  RCA3: ['Distal RCA', 'Reaches the crux and gives the PDA in a right-dominant heart.'],
+  CB: ['Conus branch', 'First branch of the RCA, to the RV outflow tract. Arises from its own aortic ostium in roughly half of hearts, and collateralises the LAD through the circle of Vieussens.'],
+  AM: ['Acute marginal', 'Right ventricular free wall. A lesion proximal to it puts the RV at risk.'],
+  RV1: ['Right ventricular branch', 'Anterior RV free wall.'],
+  RV2: ['Right ventricular branch', 'Mid RV free wall.'],
+  PDA: ['Posterior descending', 'Posterior interventricular groove: inferior wall and the posterior third of the septum. Defines dominance.'],
+  PS1: ['Posterior septal perforator', 'Posterior third of the septum, running up to meet the anterior septals.'],
+  PS2: ['Posterior septal perforator', 'Apical posterior septum.'],
+  PLV: ['Posterolateral branch', 'Inferolateral wall past the crux.'],
+  SAN: ['Sinus node artery', 'To the sinoatrial node. From the RCA in about 60% of hearts, the circumflex in the rest.'],
+  AVN: ['AV nodal artery', 'A short branch at the crux, from whichever artery is dominant. RCA in about 90%.'],
+  CS: ['Coronary sinus', 'Posterior AV groove, into the right atrium. Takes almost all the venous return.'],
+  GCV: ['Great cardiac vein', 'Up the anterior interventricular groove beside the LAD, then round into the coronary sinus.'],
+  MCV: ['Middle cardiac vein', 'Posterior interventricular groove beside the PDA.'],
+  SCV: ['Small cardiac vein', 'Right AV groove beside the RCA.'],
+  PVLV: ['Posterior vein of the LV', 'The target for the left ventricular lead in cardiac resynchronisation.'],
+  ACV: ['Anterior cardiac veins', 'Drain the RV straight into the right atrium, bypassing the coronary sinus.'],
+};
 /* ------------------------------------------------------------------ *
  * THE INJURY VECTOR
  *
@@ -367,7 +538,7 @@ export const SCENARIOS = [
  * precordial leads and the extras directly, as fractions of the same magnitude,
  * because the horizontal plane is not derivable from the frontal one.
  * ------------------------------------------------------------------ */
-export const INJURY = {
+export const INJURY: Record<string, Injury> = {
   none:       { axis: 0,    amp: 0,    chest: {} },
   // Global subendocardial: the vector runs away from the whole left ventricle,
   // towards the right shoulder. aVR looks straight down it; everything else sees its tail.
@@ -396,37 +567,45 @@ export const INJURY = {
  * knocks out the sinus node's supply and stimulates vagal afferents on the
  * inferior wall (the Bezold-Jarisch reflex), so it runs slow; an anterior MI
  * loses pump function and runs fast. */
-export const SCENARIO_HR = {
+export const SCENARIO_HR: Record<string, number> = {
   none: 75, lm: 112, 'lad-prox': 104, 'lad-mid': 92, 'lad-wrap': 88,
   d1: 80, lcx: 82, 'rca-prox': 50, 'rca-mid': 56, pda: 62, nstemi: 108,
 };
 
-export const ALL_LEADS = [...LEADS, ...EXTRA_LEADS];
-
-// ST deviation at the J point, in mV, for one lead under one scenario and stage.
-export function stDeviation(lead, scenario, stage) {
-  const inj = scenario.injury || INJURY[scenario.id] || INJURY.none;
+/** ST deviation at the J point, in mV, for one lead under one scenario and stage. */
+export function stDeviation(lead: Lead, scenario: Scenario, stage: Stage): number {
   if (!stage.st) return 0;
-  if (LEAD_AXIS[lead] !== undefined) return stage.st * project(inj.amp, inj.axis, lead);
-  return stage.st * (inj.chest[lead] || 0);
+  const inj = scenario.injury;
+  if (isLimbLead(lead)) return stage.st * project(inj.amp, inj.axis, lead);
+  return stage.st * (inj.chest[lead] ?? 0);
 }
 
-// Which leads a reader would call elevated or depressed, measured off the model at
-// its peak rather than listed by hand — so the labels can never drift from the trace.
+/** Which leads a reader would call elevated or depressed, measured off the model at
+ *  its peak rather than listed by hand — so the labels can never drift from the trace. */
 const PEAK = STAGES.reduce((a, b) => (b.st > a.st ? b : a));
 
-for (const sc of SCENARIOS) {
-  sc.injury = INJURY[sc.id] || INJURY.none;
-  sc.hr = SCENARIO_HR[sc.id] || 75;
-  sc.elevate = [];
-  sc.depress = [];
-  sc.extras = EXTRA_LEADS.filter((l) => Math.abs(sc.injury.chest[l] || 0) > 0.02);
+function derive(spec: ScenarioSpec): Scenario {
+  const injury = INJURY[spec.id] ?? { axis: 0, amp: 0, chest: {} };
+  const sc: Scenario = {
+    ...spec,
+    injury,
+    hr: SCENARIO_HR[spec.id] ?? 75,
+    elevate: [],
+    depress: [],
+    extras: EXTRA_LEADS.filter((l) => Math.abs(injury.chest[l] ?? 0) > 0.02),
+  };
   for (const lead of ALL_LEADS) {
     const mv = stDeviation(lead, sc, PEAK);
     if (mv >= 0.1) sc.elevate.push(lead);
     else if (mv <= -0.05) sc.depress.push(lead);
   }
+  return sc;
 }
+
+export const SCENARIOS: Scenario[] = SCENARIO_SPECS.map(derive);
+
+export const scenarioById = (id: string): Scenario =>
+  SCENARIOS.find((s) => s.id === id) ?? SCENARIOS[0]!;
 
 /* ------------------------------------------------------------------ *
  * DOMINANCE
@@ -437,7 +616,7 @@ for (const sc of SCENARIOS) {
  * "which vessel caused this inferior MI" more than any other variation.
  * Prevalences from the AHA review of coronary dominance.
  * ------------------------------------------------------------------ */
-export const DOMINANCE = {
+export const DOMINANCE: Record<DominanceId, Dominance> = {
   right: {
     id: 'right', label: 'Right dominant', prevalence: '~85%',
     pdaFrom: 'RCA', plvFrom: 'RCA', avnFrom: 'RCA',
@@ -456,14 +635,14 @@ export const DOMINANCE = {
 };
 
 // Segments fed through the crux: the inferior wall and the inferobasal corner.
-const CRUX_SEGS = [3, 4, 9, 10, 15];
+const CRUX_SEGS: SegmentId[] = [3, 4, 9, 10, 15];
 // The AHA map already gives the inferolateral segments to the circumflex, so
 // co-dominance moves the vessel at risk without moving any segment.
-const PLV_SEGS = [];
+const PLV_SEGS: SegmentId[] = [];
 
 /* A scenario as it plays out in one particular heart. Returns a new object —
  * the base SCENARIOS array always describes the right-dominant case. */
-export function withDominance(sc, domId = 'right') {
+export function withDominance(sc: Scenario, domId: DominanceId = 'right'): Scenario {
   const dom = DOMINANCE[domId] || DOMINANCE.right;
   if (dom.id === 'right' || sc.id === 'none' || sc.id === 'nstemi') return { ...sc, dominance: dom };
 
@@ -473,10 +652,10 @@ export function withDominance(sc, domId = 'right') {
   const isLcx = sc.id === 'lcx';
   let extra = '';
 
-  const move = (vessels, fromRight) => {
+  const move = (vessels: VesselId[], fromRight: boolean) => {
     for (const v of vessels) (fromRight ? dead.delete(v) : dead.add(v));
   };
-  const moveSegs = (list, drop) => { for (const g of list) (drop ? segs.delete(g) : segs.add(g)); };
+  const moveSegs = (list: SegmentId[], drop: boolean) => { for (const g of list) (drop ? segs.delete(g) : segs.add(g)); };
 
   if (dom.pdaFrom === 'LCX') {
     if (isRca) {
@@ -515,7 +694,7 @@ export function withDominance(sc, domId = 'right') {
 }
 
 // Which of the three big vessels owns each AHA segment, for this heart.
-export function territoryFor(domId = 'right') {
+export function territoryFor(domId: DominanceId = 'right'): Record<'LAD' | 'RCA' | 'LCX', SegmentId[]> {
   const dom = DOMINANCE[domId] || DOMINANCE.right;
   const t = { LAD: [...TERRITORY.LAD], RCA: [...TERRITORY.RCA], LCX: [...TERRITORY.LCX] };
   if (dom.pdaFrom === 'LCX') {
@@ -526,63 +705,18 @@ export function territoryFor(domId = 'right') {
 }
 
 // Every vessel the 3D scene builds. Scenario `dead` lists must be a subset of this.
-export const VESSEL_IDS = [
-  'LM', 'LAD1', 'LAD2', 'LAD3', 'D1', 'D2', 'S1', 'S2', 'S3', 'RI',
-  'LCX1', 'LCX2', 'OM1', 'OM2',
-  'RCA1', 'RCA2', 'RCA3', 'AM', 'CB', 'RV1', 'RV2', 'PDA', 'PS1', 'PS2', 'PLV', 'SAN', 'AVN',
-  'CS', 'GCV', 'MCV', 'SCV', 'PVLV', 'ACV',
-];
-
-/* What each coronary is called and what it feeds, for the model's own legend.
- * `variant` notes how often the vessel is absent or arises elsewhere. */
-export const VESSEL_INFO = {
-  LM: ['Left main', 'Left coronary sinus to the LAD/LCx bifurcation. 5-10 mm long; occlusion here is the widowmaker.'],
-  LAD1: ['Proximal LAD', 'Anterior interventricular groove, before the first septal and first diagonal.'],
-  LAD2: ['Mid LAD', 'Between the first diagonal and the apex.'],
-  LAD3: ['Distal LAD', 'Apical. Wraps round onto the inferior wall in about two thirds of hearts (type III).'],
-  D1: ['First diagonal', 'Anterolateral wall. Shares the anterolateral papillary muscle with OM1.'],
-  D2: ['Second diagonal', 'Mid anterolateral wall.'],
-  RI: ['Ramus intermedius', 'A third branch straight off the left main, between the LAD and the circumflex. Present in 15-30% of hearts.'],
-  S1: ['First septal perforator', 'Anterior two-thirds of the septum, plus the right bundle and the left anterior fascicle.'],
-  S2: ['Second septal perforator', 'Mid anterior septum.'],
-  S3: ['Third septal perforator', 'Apical septum.'],
-  LCX1: ['Proximal circumflex', 'Left atrioventricular groove, before the first obtuse marginal.'],
-  LCX2: ['Distal circumflex', 'Continues round the AV groove; reaches the crux only in a left-dominant heart.'],
-  OM1: ['First obtuse marginal', 'Lateral free wall. Second supply to the anterolateral papillary muscle.'],
-  OM2: ['Second obtuse marginal', 'Inferolateral wall.'],
-  RCA1: ['Proximal RCA', 'Right AV groove, before the acute marginal.'],
-  RCA2: ['Mid RCA', 'Between the acute marginal and the crux.'],
-  RCA3: ['Distal RCA', 'Reaches the crux and gives the PDA in a right-dominant heart.'],
-  CB: ['Conus branch', 'First branch of the RCA, to the RV outflow tract. Arises from its own aortic ostium in roughly half of hearts, and collateralises the LAD through the circle of Vieussens.'],
-  AM: ['Acute marginal', 'Right ventricular free wall. A lesion proximal to it puts the RV at risk.'],
-  RV1: ['Right ventricular branch', 'Anterior RV free wall.'],
-  RV2: ['Right ventricular branch', 'Mid RV free wall.'],
-  PDA: ['Posterior descending', 'Posterior interventricular groove: inferior wall and the posterior third of the septum. Defines dominance.'],
-  PS1: ['Posterior septal perforator', 'Posterior third of the septum, running up to meet the anterior septals.'],
-  PS2: ['Posterior septal perforator', 'Apical posterior septum.'],
-  PLV: ['Posterolateral branch', 'Inferolateral wall past the crux.'],
-  SAN: ['Sinus node artery', 'To the sinoatrial node. From the RCA in about 60% of hearts, the circumflex in the rest.'],
-  AVN: ['AV nodal artery', 'A short branch at the crux, from whichever artery is dominant. RCA in about 90%.'],
-  CS: ['Coronary sinus', 'Posterior AV groove, into the right atrium. Takes almost all the venous return.'],
-  GCV: ['Great cardiac vein', 'Up the anterior interventricular groove beside the LAD, then round into the coronary sinus.'],
-  MCV: ['Middle cardiac vein', 'Posterior interventricular groove beside the PDA.'],
-  SCV: ['Small cardiac vein', 'Right AV groove beside the RCA.'],
-  PVLV: ['Posterior vein of the LV', 'The target for the left ventricular lead in cardiac resynchronisation.'],
-  ACV: ['Anterior cardiac veins', 'Drain the RV straight into the right atrium, bypassing the coronary sinus.'],
-};
-
 export const RR = 0.8;        // seconds per beat at HR 75; scenarios set their own rate
-export const rrFor = (hr) => 60 / (hr || 75);
+export const rrFor = (hr: number): number => 60 / (hr || 75);
 export const MM_PER_S = 25;
 export const MM_PER_MV = 10;
 
-export function gauss(t, mu, sigma) {
+export function gauss(t: number, mu: number, sigma: number): number {
   const d = (t - mu) / sigma;
   return Math.exp(-0.5 * d * d);
 }
 
 // One beat in mV, for a lead whose morphology has already been modified.
-export function beat(t, m, stOffset) {
+export function beat(t: number, m: Morph, stOffset: number): number {
   let v = m.p * gauss(t, 0.120, 0.022)
         + m.q * gauss(t, 0.200, 0.009)
         + m.r * gauss(t, 0.216, 0.011)
@@ -596,7 +730,7 @@ export function beat(t, m, stOffset) {
   return v;
 }
 
-export function ahaSegment(thetaDeg, t) {
+export function ahaSegment(thetaDeg: number, t: number): SegmentId {
   const a = ((thetaDeg % 360) + 360) % 360;
   if (t >= 0.90) return 17;
   if (t >= 0.60) {
@@ -612,13 +746,13 @@ export function ahaSegment(thetaDeg, t) {
   else if (a >= 240 && a < 300) idx = 3;
   else if (a >= 300) idx = 4;
   else idx = 5;
-  return (t < 0.30 ? 1 : 7) + idx;
+  return ((t < 0.30 ? 1 : 7) + idx) as SegmentId;
 }
 
 // Apply a scenario and a stage to one lead: returns the modified morphology and the ST offset in mV.
 // Only I, II and the chest leads are modified directly. The other four frontal leads
 // are re-derived afterwards, so the twelve-lead stays a possible recording at every step.
-function morphFor(lead, scenario, stage) {
+function morphFor(lead: Lead, scenario: Scenario, stage: Stage): Morph {
   const m = { ...MORPH[lead] };
   // Keyed on the lead's role at the peak, not its deviation right now: the Q wave
   // outlives the ST elevation by decades, so it cannot be driven by the current shift.
@@ -644,15 +778,104 @@ function morphFor(lead, scenario, stage) {
   return m;
 }
 
-export function leadState(lead, scenario, stage) {
+export function leadState(lead: Lead, scenario: Scenario, stage: Stage): { m: Morph; offset: number } {
   const offset = stDeviation(lead, scenario, stage);
-  if (DERIVE_LIMB[lead]) {
+  if (isDerived(lead)) {
     return {
       m: deriveLimb(lead, morphFor('I', scenario, stage), morphFor('II', scenario, stage)),
       offset,
     };
   }
   return { m: morphFor(lead, scenario, stage), offset };
+}
+/* ------------------------------------------------------------------ *
+ * 3. GEOMETRY TYPES
+ * ------------------------------------------------------------------ */
+
+/** A point or direction in the local cardiac frame, in centimetres.
+ *  +x patient's left, +y towards the base, +z anterior. */
+export type Vec3 = [x: number, y: number, z: number];
+
+/** Three world-space column vectors mapping the build frame into the chest. */
+export interface Basis { X: Vec3; Y: Vec3; Z: Vec3 }
+
+export interface EllipsoidSpec { c: Vec3; r: Vec3 }
+export interface AppendageSpec { path: Vec3[]; r: [number, number] }
+
+export interface PapillaryMuscle {
+  id: 'ALPM' | 'PMPM';
+  name: string;
+  short: string;
+  theta: number;
+  base: number;
+  tip: number;
+  r0: number;
+  r1: number;
+  lean: number;
+  supply: VesselId[];
+  dual: boolean;
+  note: string;
+}
+
+interface ConductionCommon {
+  id: 'SAN' | 'AVN' | 'HIS' | 'RBB' | 'LAF' | 'LPF';
+  name: string;
+  r: number;
+  supply: VesselId[];
+  dual: boolean;
+  block: string;
+  note: string;
+}
+export type ConductionPart =
+  | (ConductionCommon & { kind: 'node'; at: Vec3; path?: never })
+  | (ConductionCommon & { kind: 'path'; path: Vec3[]; at?: never });
+
+export interface ConductionState {
+  id: ConductionCommon['id'];
+  name: string;
+  block: string;
+  failed: boolean;
+  lost: VesselId[];
+}
+
+export interface ConductionSummary {
+  name: string;
+  detail: string;
+  parts: ConductionState[];
+}
+
+export interface Valve {
+  id: 'mitral' | 'tricuspid' | 'aortic' | 'pulmonary';
+  name: string;
+  leaflets: 2 | 3;
+  r: number;
+  c: Vec3;
+  normal: Vec3;
+  note: string;
+}
+
+/** A radial surface, sampled from a scan: R(theta, t). */
+export interface HeightMap { nTheta: number; nT: number; grid: number[][] }
+
+/** Positions and triangle indices for a thick shell over a (theta, t) patch. */
+export interface ShellSpec {
+  a0: number;
+  a1: number;
+  wrap: boolean;
+  t0?: number;
+  t1?: number;
+  nA: number;
+  nT: number;
+  outer: (theta: number, t: number) => Vec3;
+  inner: (theta: number, t: number) => Vec3;
+}
+
+export interface ShellMesh {
+  positions: number[];
+  thetas: number[];
+  ts: number[];
+  index: number[];
+  vertexCount: number;
 }
 
 /* ------------------------------------------------------------------ *
@@ -703,40 +926,40 @@ export const RV_TIP = 0.870;        // RV free wall stops ~1.1 cm short of the L
 export const RV_WALL = 0.40;
 export const RV_BULGE = 4.00;
 
-export const norm360 = (d) => ((d % 360) + 360) % 360;
+export const norm360 = (d: number): number => ((d % 360) + 360) % 360;
 
-export const lvY = (t) => LV_TOP - t * LV_LEN;
+export const lvY = (t: number): number => LV_TOP - t * LV_LEN;
 
 // Prolate ellipsoid: widest at the equator, rounded (not pointed) at the apex.
-export function lvRadius(t) {
+export function lvRadius(t: number): number {
   const z = lvY(t) / LV_C;
   return LV_A * Math.sqrt(Math.max(0, 1 - z * z));
 }
 
 // The atrioventricular plane is oblique — the annulus sits higher posteriorly.
-export const baseTilt = (thetaDeg) => 0.55 * Math.cos((norm360(thetaDeg) - 250) * Math.PI / 180);
+export const baseTilt = (thetaDeg: number): number => 0.55 * Math.cos((norm360(thetaDeg) - 250) * Math.PI / 180);
 
-export const lvSurfY = (thetaDeg, t) => lvY(t) + baseTilt(thetaDeg) * Math.pow(1 - t, 2.2);
+export const lvSurfY = (thetaDeg: number, t: number): number => lvY(t) + baseTilt(thetaDeg) * Math.pow(1 - t, 2.2);
 
 // Posterolateral wall thicker than septum; thinnest of all at the apex.
-export function lvWall(thetaDeg, t) {
+export function lvWall(thetaDeg: number, t: number): number {
   const septal = Math.cos((norm360(thetaDeg) - 180) * Math.PI / 180);  // +1 septum, -1 free wall
   return (1.02 - 0.10 * septal) * (1 - 0.45 * Math.pow(t, 1.8));
 }
 
 // The cavity closes before the epicardial apex — apical myocardium is near solid.
-export const lvEndo = (thetaDeg, t) => Math.max(0, lvRadius(t) - lvWall(thetaDeg, t));
+export const lvEndo = (thetaDeg: number, t: number): number => Math.max(0, lvRadius(t) - lvWall(thetaDeg, t));
 
 // The RV free wall: a crescent that falls to nothing at both interventricular
 // grooves, and tapers along the long axis so the frontal silhouette is triangular.
 // Asymmetric hump across the free wall, peaking at RV_SKEW and vanishing at both grooves.
-function crescent(u) {
+function crescent(u: number): number {
   const k = 2.2, a = 2 * RV_SKEW * k, b = 2 * (1 - RV_SKEW) * k;
   const peak = Math.pow(RV_SKEW, a) * Math.pow(1 - RV_SKEW, b);
   return (Math.pow(u, a) * Math.pow(1 - u, b)) / peak;
 }
 
-export function rvBulge(thetaDeg, t) {
+export function rvBulge(thetaDeg: number, t: number): number {
   const a = norm360(thetaDeg);
   if (t < RV_T0 || t > RV_TIP || a <= ANT_GROOVE || a >= POST_GROOVE) return 0;
   const u = (a - ANT_GROOVE) / (POST_GROOVE - ANT_GROOVE);
@@ -754,26 +977,26 @@ export const RV_TILT = 0.45;      // 0 = straight out from the LV axis, 1 = stra
 // bulk of the right ventricle lies against the sternum, not out to the right.
 export const RV_SKEW = 0.30;
 
-export function rvDir(thetaDeg) {
+export function rvDir(thetaDeg: number): Vec3 {
   const a = thetaDeg * Math.PI / 180;
-  const d = [Math.cos(a) * (1 - RV_TILT), 0, Math.sin(a) * (1 - RV_TILT) + RV_TILT];
+  const d: Vec3 = [Math.cos(a) * (1 - RV_TILT), 0, Math.sin(a) * (1 - RV_TILT) + RV_TILT];
   const n = Math.hypot(d[0], d[2]);
   return [d[0] / n, 0, d[2] / n];
 }
 
-export function lvPoint(thetaDeg, t, off = 0) {
+export function lvPoint(thetaDeg: number, t: number, off = 0): Vec3 {
   const a = thetaDeg * Math.PI / 180;
   const r = lvRadius(t) + off;
   return [r * Math.cos(a), lvSurfY(thetaDeg, t), r * Math.sin(a)];
 }
 
-export function lvEndoPoint(thetaDeg, t, floor = 0) {
+export function lvEndoPoint(thetaDeg: number, t: number, floor = 0): Vec3 {
   const a = thetaDeg * Math.PI / 180;
   const r = Math.max(floor, lvEndo(thetaDeg, t));
   return [r * Math.cos(a), lvSurfY(thetaDeg, t), r * Math.sin(a)];
 }
 
-export function rvPoint(thetaDeg, t, off = 0) {
+export function rvPoint(thetaDeg: number, t: number, off = 0): Vec3 {
   const p = lvPoint(thetaDeg, t);
   const b = rvBulge(thetaDeg, t);
   if (b <= 0 && off === 0) return p;
@@ -782,12 +1005,12 @@ export function rvPoint(thetaDeg, t, off = 0) {
 }
 
 // Inner surface of the RV free wall: pulled back along the same direction.
-export function rvInnerPoint(thetaDeg, t) {
+export function rvInnerPoint(thetaDeg: number, t: number): Vec3 {
   return rvPoint(thetaDeg, t, -RV_WALL);
 }
 
 // Kept for the radial checks: how far the RV surface lies from the long axis.
-export const rvRadius = (thetaDeg, t) => {
+export const rvRadius = (thetaDeg: number, t: number): number => {
   const p = rvPoint(thetaDeg, t);
   return Math.hypot(p[0], p[2]);
 };
@@ -801,7 +1024,7 @@ export const rvRadius = (thetaDeg, t) => {
  * descending alone. That single supply is why posteromedial rupture after an
  * inferior MI is 6-12 times commoner than anterolateral rupture.
  * ------------------------------------------------------------------ */
-export const PAPILLARY = [
+export const PAPILLARY: PapillaryMuscle[] = [
   {
     id: 'ALPM', name: 'anterolateral papillary muscle', short: 'anterolateral',
     theta: 55, base: 0.74, tip: 0.44, r0: 0.55, r1: 0.30, lean: 0.50,
@@ -817,7 +1040,7 @@ export const PAPILLARY = [
 ];
 
 // Base sits on the endocardium; the tip stands free in the cavity, leaning towards the axis.
-export function papillaryAxisPoints(pm) {
+export function papillaryAxisPoints(pm: PapillaryMuscle): [base: Vec3, tip: Vec3] {
   const a = pm.theta * Math.PI / 180;
   const rBase = Math.max(0.1, lvEndo(pm.theta, pm.base));
   const rTip = Math.max(0.1, lvEndo(pm.theta, pm.tip)) * pm.lean;
@@ -846,9 +1069,9 @@ export function papillaryAxisPoints(pm) {
  * isolated left posterior fascicular block is rare.
  * ------------------------------------------------------------------ */
 
-const septalEndo = (t) => lvEndoPoint(180, t);
+const septalEndo = (t: number): Vec3 => lvEndoPoint(180, t);
 
-export const CONDUCTION = [
+export const CONDUCTION: ConductionPart[] = [
   {
     id: 'SAN', name: 'sinoatrial node', kind: 'node',
     at: [-3.30, 5.55, 0.62], r: 0.26,
@@ -896,9 +1119,9 @@ export const CONDUCTION = [
 
 /* What the conduction system does when a given set of vessels loses flow.
  * A dual-supplied part needs BOTH its arteries gone before it fails. */
-export function conductionState(deadIds = []) {
+export function conductionState(deadIds: VesselId[] = []): ConductionState[] {
   const dead = new Set(deadIds);
-  const out = [];
+  const out: ConductionState[] = [];
   for (const part of CONDUCTION) {
     const lost = part.supply.filter((v) => dead.has(v));
     const failed = part.dual ? lost.length === part.supply.length : lost.length > 0;
@@ -908,7 +1131,7 @@ export function conductionState(deadIds = []) {
 }
 
 // One line naming the rhythm or block that follows, for the readout.
-export function conductionSummary(deadIds = []) {
+export function conductionSummary(deadIds: VesselId[] = []): ConductionSummary | null {
   const failed = conductionState(deadIds).filter((p) => p.failed);
   if (!failed.length) return null;
   const ids = new Set(failed.map((p) => p.id));
@@ -939,7 +1162,7 @@ export function conductionSummary(deadIds = []) {
  * valve is the odd one out: no fibrous continuity with anything, and it stands
  * anterior and superior to all three, on the far side of the infundibulum.
  * ------------------------------------------------------------------ */
-export const VALVES = [
+export const VALVES: Valve[] = [
   {
     id: 'mitral', name: 'mitral valve', leaflets: 2, r: 1.40,
     c: [0.15, LV_TOP + 0.05, -0.10], normal: [-0.20, 1, 0.34],
@@ -962,16 +1185,16 @@ export const VALVES = [
   },
 ];
 
-export const valveById = (id) => VALVES.find((v) => v.id === id);
+export const valveById = (id: string): Valve | undefined => VALVES.find((v) => v.id === id);
 
 // Apex points left, inferior and anterior — the heart lying obliquely in the chest.
-export const APEX_DIR = [0.55, -0.72, 0.42];
+export const APEX_DIR: Vec3 = [0.55, -0.72, 0.42];
 
 /* Positions and triangle indices for a thick shell over a (theta, t) patch.
  * Kept free of Three.js so the topology can be checked in Node. */
-export function shellMesh({ a0, a1, wrap, t0 = 0, t1 = 1, nA, nT, outer, inner }) {
+export function shellMesh({ a0, a1, wrap, t0 = 0, t1 = 1, nA, nT, outer, inner }: ShellSpec): ShellMesh {
   const ring = wrap ? nA : nA + 1;
-  const positions = [], thetas = [], ts = [], index = [];
+  const positions: number[] = [], thetas: number[] = [], ts: number[] = [], index: number[] = [];
 
   for (let layer = 0; layer < 2; layer++) {
     const radial = layer === 0 ? outer : inner;
@@ -988,7 +1211,7 @@ export function shellMesh({ a0, a1, wrap, t0 = 0, t1 = 1, nA, nT, outer, inner }
   }
 
   const layerSize = (nT + 1) * ring;
-  const quad = (a, b, c, d) => index.push(a, b, c, a, c, d);
+  const quad = (a: number, b: number, c: number, d: number) => index.push(a, b, c, a, c, d);
 
   for (let layer = 0; layer < 2; layer++) {
     const base = layer * layerSize;
@@ -1026,13 +1249,13 @@ export function shellMesh({ a0, a1, wrap, t0 = 0, t1 = 1, nA, nT, outer, inner }
 // The right atrium moved rightward — it forms the right border of the heart — and
 // the left atrium moved posteriorly, since it is the most posterior chamber and
 // contributes almost nothing to the frontal outline.
-export const LA_POS = { c: [0.15, 4.45, -1.70], r: [2.10, 1.45, 1.90] };
-export const RA_POS = { c: [-3.05, 4.15, 0.15], r: [2.00, 1.83, 1.80] };
+export const LA_POS: EllipsoidSpec = { c: [0.15, 4.45, -1.70], r: [2.10, 1.45, 1.90] };
+export const RA_POS: EllipsoidSpec = { c: [-3.05, 4.15, 0.15], r: [2.00, 1.83, 1.80] };
 
 // Appendages. The right one is a broad flap over the aortic root, the left a
 // narrow finger — both sit on the frontal outline, so the silhouette check needs them.
-export const LAA = { path: [[1.5, 4.45, 0.15], [2.35, 4.25, 0.8], [2.8, 3.9, 1.2]], r: [0.45, 0.22] };
-export const RAA = { path: [[-2.35, 4.5, 0.85], [-1.55, 4.6, 1.5], [-0.85, 4.4, 1.6]], r: [0.62, 0.34] };
+export const LAA: AppendageSpec = { path: [[1.5, 4.45, 0.15], [2.35, 4.25, 0.8], [2.8, 3.9, 1.2]], r: [0.45, 0.22] };
+export const RAA: AppendageSpec = { path: [[-2.35, 4.5, 0.85], [-1.55, 4.6, 1.5], [-0.85, 4.4, 1.6]], r: [0.62, 0.34] };
 
 // Frontal silhouette targets measured from the reference diagram (see README).
 export const SILHOUETTE_ASPECT = 1.074;   // width / height of the cardiac outline
@@ -1042,22 +1265,22 @@ export const SILHOUETTE_APEX_FRAC = 0.72; // apex position across the width, fro
  * direction) onto APEX_DIR, and local +z as close to true anterior as the long
  * axis allows. Returned as three world-space column vectors, so the same maths
  * drives the renderer and can be checked without a browser. */
-let _basis = null;
-export function heartBasis() {
+let _basis: Basis | null = null;
+export function heartBasis(): Basis {
   if (_basis) return _basis;
   const al = Math.hypot(APEX_DIR[0], APEX_DIR[1], APEX_DIR[2]);
-  const A = APEX_DIR.map((v) => v / al);
-  const Y = [-A[0], -A[1], -A[2]];                       // local +y in world
+  const A: Vec3 = [APEX_DIR[0] / al, APEX_DIR[1] / al, APEX_DIR[2] / al];
+  const Y: Vec3 = [-A[0], -A[1], -A[2]];                 // local +y in world
   const d = Y[2];                                        // (0,0,1) . Y
-  const f = [-Y[0] * d, -Y[1] * d, 1 - Y[2] * d];
+  const f: Vec3 = [-Y[0] * d, -Y[1] * d, 1 - Y[2] * d];
   const fl = Math.hypot(f[0], f[1], f[2]);
-  const Z = [f[0] / fl, f[1] / fl, f[2] / fl];           // local +z in world
-  const X = [Y[1] * Z[2] - Y[2] * Z[1], Y[2] * Z[0] - Y[0] * Z[2], Y[0] * Z[1] - Y[1] * Z[0]];
+  const Z: Vec3 = [f[0] / fl, f[1] / fl, f[2] / fl];     // local +z in world
+  const X: Vec3 = [Y[1] * Z[2] - Y[2] * Z[1], Y[2] * Z[0] - Y[0] * Z[2], Y[0] * Z[1] - Y[1] * Z[0]];
   _basis = { X, Y, Z };
   return _basis;
 }
 
-export function localToWorld(p) {
+export function localToWorld(p: Vec3): Vec3 {
   const { X, Y, Z } = heartBasis();
   return [
     X[0] * p[0] + Y[0] * p[1] + Z[0] * p[2],
@@ -1068,8 +1291,16 @@ export function localToWorld(p) {
 
 /* Every epicardial point of the ventricles and atria, in world coordinates.
  * The frontal projection of this cloud is the cardiac silhouette. */
-export function silhouetteCloud(step = 4) {
-  const pts = [];
+/** Point `u` of the way along segment `i` of a spine. The caller has already
+ *  clamped `i`, so this only satisfies the compiler's bounds check. */
+function lerpPath(path: Vec3[], i: number, u: number): Vec3 {
+  const a = path[i] ?? [0, 0, 0];
+  const b = path[i + 1] ?? a;
+  return [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u];
+}
+
+export function silhouetteCloud(step = 4): Vec3[] {
+  const pts: Vec3[] = [];
   for (let th = 0; th < 360; th += step) {
     for (let i = 0; i <= 40; i++) {
       const t = i / 40;
@@ -1081,15 +1312,17 @@ export function silhouetteCloud(step = 4) {
     const seg = A.path.length - 1;
     for (let k = 0; k <= 24; k++) {
       const f = k / 24, i = Math.min(seg - 1, Math.floor(f * seg)), u = f * seg - i;
-      const c = [0, 1, 2].map((j) => A.path[i][j] + (A.path[i + 1][j] - A.path[i][j]) * u);
+      const c = lerpPath(A.path, i, u);
       const rad = A.r[0] + (A.r[1] - A.r[0]) * f;
       for (let m = 0; m <= 6; m++) {
         const ph = (m / 6) * Math.PI;
         for (let j = 0; j < 12; j++) {
           const th = (j / 12) * 2 * Math.PI;
-          pts.push(localToWorld([c[0] + rad * Math.sin(ph) * Math.cos(th),
-                                 c[1] + rad * Math.cos(ph),
-                                 c[2] + rad * Math.sin(ph) * Math.sin(th)]));
+          pts.push(localToWorld([
+            c[0] + rad * Math.sin(ph) * Math.cos(th),
+            c[1] + rad * Math.cos(ph),
+            c[2] + rad * Math.sin(ph) * Math.sin(th),
+          ]));
         }
       }
     }
@@ -1117,21 +1350,22 @@ export function silhouetteCloud(step = 4) {
  * analytic one, so everything downstream keeps working unchanged.
  * ------------------------------------------------------------------ */
 
-export function heightSampler(map) {
+export function heightSampler(map: HeightMap): (thetaDeg: number, t: number) => number {
   const { nTheta, nT, grid } = map;
-  return function radius(thetaDeg, t) {
+  return function radius(thetaDeg: number, t: number): number {
     const a = (norm360(thetaDeg) / 360) * nTheta;
     const ti = Math.min(nT - 1 - 1e-9, Math.max(0, t * nT - 0.5));
     const i0 = Math.floor(ti), i1 = Math.min(nT - 1, i0 + 1), ft = ti - i0;
     const j0 = Math.floor(a) % nTheta, j1 = (j0 + 1) % nTheta, fa = a - Math.floor(a);
-    const lerp = (p, q, f) => p + (q - p) * f;
-    return lerp(lerp(grid[i0][j0], grid[i0][j1], fa),
-                lerp(grid[i1][j0], grid[i1][j1], fa), ft);
+    const lerp = (p: number, q: number, f: number) => p + (q - p) * f;
+    const row0 = grid[i0] ?? [], row1 = grid[i1] ?? [];
+    return lerp(lerp(row0[j0] ?? 0, row0[j1] ?? 0, fa),
+                lerp(row1[j0] ?? 0, row1[j1] ?? 0, fa), ft);
   };
 }
 
 // Same shape as lvPoint, but the radius comes from a sampler.
-export function sampledPoint(radius, thetaDeg, t, off = 0) {
+export function sampledPoint(radius: (th: number, t: number) => number, thetaDeg: number, t: number, off = 0): Vec3 {
   const a = thetaDeg * Math.PI / 180;
   const r = radius(thetaDeg, t) + off;
   return [r * Math.cos(a), lvY(t), r * Math.sin(a)];

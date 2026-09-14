@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // The suite is lifted almost verbatim from the pre-TypeScript checks and is
+    // full of short inline helpers over known-good fixtures. Strict inference on
+    // those adds annotations without catching anything the assertions don't.
+    // Everything under src/ is still checked at full strength.
+    "noImplicitAny": false,
+    "noUncheckedIndexedAccess": false,
+    "noUnusedLocals": false
+  },
+  "include": ["test"]
+}
