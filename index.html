@@ -77,7 +77,7 @@
           <label><input type="checkbox" id="opt-chambers" checked> RV &amp; atria</label>
         </div>
 
-        <details class="disclosure">
+        <details class="disclosure" open>
           <summary>View options</summary>
           <div class="disclosure-body">
             <div class="field">
@@ -93,13 +93,13 @@
 
             <div class="field">
               <label for="opt-opacity">LV wall opacity</label>
-              <input type="range" id="opt-opacity" min="0.25" max="1" step="0.05" value="1">
+              <input type="range" id="opt-opacity" min="0.25" max="1" step="0.05" value="0.7">
             </div>
 
             <div class="field">
               <div class="layers">
                 <label><input type="checkbox" id="opt-spin" checked> Rotate</label>
-                <label><input type="checkbox" id="opt-scan"> Scanned anatomy</label>
+                <label><input type="checkbox" id="opt-scan" checked> Scanned anatomy</label>
               </div>
               <p id="geometry-note" class="hint">Procedural &middot; generated from measured anatomy</p>
             </div>

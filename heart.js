@@ -20,9 +20,9 @@ const state = {
   showArteries: true,
   showVeins: false,
   showChambers: true,
-  wallOpacity: 1,
+  wallOpacity: 0.7,
   spin: true,
-  geometry: 'procedural',   // or 'scanned'
+  geometry: 'scanned',      // or 'procedural'
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -689,6 +689,17 @@ function paintLV() {
 
 const DEAD_COLOUR = new THREE.Color('#6b6660');
 
+// Toggling `transparent` can require a shader recompile. Only flag it on a real
+// change so a slider drag doesn't rebuild the program on every frame.
+function setOpacity(material, opacity) {
+  const t = opacity < 1;
+  if (material.transparent !== t) {
+    material.transparent = t;
+    material.needsUpdate = true;
+  }
+  material.opacity = opacity;
+}
+
 function paintVessels() {
   if (!lesionMarker) return;
   const dead = new Set(state.scenario.dead);
@@ -696,8 +707,7 @@ function paintVessels() {
   for (const [id, v] of vessels) {
     const isDead = active && dead.has(id);
     v.material.color.copy(isDead ? DEAD_COLOUR : v.base);
-    v.material.opacity = isDead ? 0.55 : 1;
-    v.material.transparent = isDead;
+    setOpacity(v.material, isDead ? 0.55 : 1);
     v.mesh.visible = v.kind === 'artery' ? state.showArteries : state.showVeins;
   }
   const first = state.scenario.dead[0];
@@ -733,10 +743,7 @@ function paintChambers() {
   });
 
   const lv = activeLV();
-  if (lv) {
-    lv.material.opacity = state.wallOpacity;
-    lv.material.transparent = state.wallOpacity < 1;
-  }
+  if (lv) setOpacity(lv.material, state.wallOpacity);
 }
 
 /* ------------------------------------------------------------------ *
@@ -843,6 +850,8 @@ function boot() {
     $('#stage').innerHTML = '<p class="fallback">This browser could not start WebGL, so the 3D model is unavailable. Everything else on this page — the ECG, the bullseye map and the reference tables — still works.</p>';
   }
   update();
+  // Scanned geometry is the default, so fetch it once the procedural model is up.
+  if (state.geometry === 'scanned') applyGeometry();
   window.addEventListener('resize', drawECG);
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', drawECG);
 }
