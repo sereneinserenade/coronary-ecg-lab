@@ -1,0 +1,17 @@
+The mesh files in this directory (*.bin) and the geometry in heart-meshes.json are
+derived from BodyParts3D.
+
+  BodyParts3D, Copyright (C) The Database Center for Life Science
+  licensed under CC Attribution-Share Alike 2.1 Japan
+  https://dbarchive.biosciencedbc.jp/en/bodyparts3d/
+  https://creativecommons.org/licenses/by-sa/2.1/jp/deed.en
+
+They have been modified: only the heart structures were extracted, they were
+registered into this project's cardiac coordinate frame, uniformly scaled to
+centimetres, and decimated by vertex clustering. As adaptations they are
+distributed under the same CC BY-SA 2.1 Japan licence.
+
+Regenerate with:  python3 tools/build_heart_meshes.py
+
+The rest of the site (HTML, CSS, JavaScript) is a separate work that loads these
+files; it is not itself an adaptation of them.
