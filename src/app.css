@@ -35,12 +35,15 @@
 }
 
 [data-theme="dark"] {
-  --color-canvas: oklch(17% 0.008 165);
-  --color-surface: oklch(21% 0.009 165);
-  --color-elevated: oklch(24% 0.009 165);
-  --color-ink: oklch(93% 0.005 165);
-  --color-muted: oklch(70% 0.014 165);
-  --color-line: oklch(30% 0.01 165);
+  /* Four percent of lightness between canvas, surface and elevated read as one
+     flat black on a real screen. Widened, and the border lifted well clear of
+     both, so a card looks like a card rather than a faint rectangle. */
+  --color-canvas: oklch(15.5% 0.008 165);
+  --color-surface: oklch(22% 0.010 165);
+  --color-elevated: oklch(27% 0.011 165);
+  --color-ink: oklch(94% 0.005 165);
+  --color-muted: oklch(72% 0.014 165);
+  --color-line: oklch(34% 0.012 165);
   --color-accent: oklch(78% 0.10 175);
   --color-accent-hover: oklch(84% 0.10 175);
   --color-accent-soft: oklch(28% 0.035 175);
@@ -123,4 +126,112 @@
 }
 @utility animate-kb-collapse-down {
   animation: kb-collapse-down 220ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+/* ------------------------------------------------------------------ *
+ * REFERENCE PROSE
+ * Two competing widths in one column: prose wants about 66 characters
+ * to stay readable, and a five-column clinical table wants everything
+ * it can get. So prose is held to the measure and tables break out of
+ * it, each in its own scroll container.
+ * ------------------------------------------------------------------ */
+@layer components {
+  .ref-prose > p,
+  .ref-prose > ul,
+  .ref-prose > h3 { max-width: var(--measure); }
+
+  .ref-prose > p { margin-block: 0.75rem; line-height: 1.65; }
+  .ref-prose > p:first-child { margin-block-start: 0; }
+
+  .ref-prose > h3 {
+    margin-block: 1.5rem 0.5rem;
+    font-size: 1rem;
+    font-weight: 600;
+  }
+
+  .ref-prose > ul {
+    margin-block: 0.75rem;
+    padding-inline-start: 1.15rem;
+    display: grid;
+    gap: 0.5rem;
+  }
+  .ref-prose li::marker { color: var(--color-muted); }
+
+  .ref-prose .ref-note {
+    max-width: var(--measure);
+    font-size: 0.8125rem;
+    color: var(--color-muted);
+    border-top: 1px solid var(--color-line);
+    padding-block-start: 0.75rem;
+    margin-block-start: 1.25rem;
+  }
+
+  /* Tables are data, so they may be wider than the prose — but only inside
+     their own horizontal scroller, never widening the page. */
+  .ref-table {
+    margin-block: 1.25rem;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-card);
+    background: var(--color-surface);
+  }
+
+  .ref-table table {
+    width: 100%;
+    border-collapse: collapse;
+    text-align: left;
+    font-size: 0.875rem;
+    /* Below this the columns wrap into unreadable slivers; let it scroll. */
+    min-width: 46rem;
+  }
+
+  .ref-table caption {
+    caption-side: top;
+    padding: 0.75rem 1rem;
+    text-align: left;
+    font-size: 0.75rem;
+    line-height: 1.5;
+    color: var(--color-muted);
+    border-bottom: 1px solid var(--color-line);
+  }
+
+  .ref-table th {
+    padding: 0.625rem 1rem;
+    font-size: 0.6875rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+    white-space: nowrap;
+    background: var(--color-elevated);
+    border-block-end: 1px solid var(--color-line);
+  }
+
+  .ref-table td {
+    padding: 0.75rem 1rem;
+    vertical-align: top;
+    border-block-start: 1px solid var(--color-line);
+  }
+  .ref-table tbody tr:first-child td { border-block-start: none; }
+
+  @media (hover: hover) and (pointer: fine) {
+    .ref-table tbody tr {
+      transition: background-color 150ms ease-out;
+    }
+    .ref-table tbody tr:hover { background: var(--color-elevated); }
+  }
+
+  /* Lead names are the scan target in every one of these tables, so they get a
+     chip — quiet enough not to stripe the page, and never broken across lines. */
+  .ref-prose code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    font-size: 0.8125em;
+    white-space: nowrap;
+    padding: 0.1em 0.4em;
+    border-radius: 4px;
+    background: var(--color-elevated);
+    color: var(--color-ink);
+    box-shadow: inset 0 0 0 1px var(--color-line);
+  }
 }

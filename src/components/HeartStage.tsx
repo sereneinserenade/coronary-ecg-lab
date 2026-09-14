@@ -7,6 +7,8 @@ export function HeartStage(props: { lab: Lab }) {
   let host!: HTMLDivElement;
   const [scene, setScene] = createSignal<HeartScene | null>(null);
   const [views, setViews] = createSignal<{ id: ViewName; label: string }[]>([]);
+  // Which named view the camera is actually sitting at, so the buttons can say so.
+  const [active, setActive] = createSignal<ViewName | null>('anterior');
   const [note, setNote] = createSignal('Procedural · generated from measured anatomy');
   const [status, setStatus] = createSignal<'loading' | 'ready' | 'unsupported'>('loading');
 
@@ -25,6 +27,11 @@ export function HeartStage(props: { lab: Lab }) {
         onNote: setNote,
         // A failed scan is not a dead page: fall back and say so, in text.
         onScanFailed: () => props.lab.setState('geometry', 'procedural'),
+        // Grabbing the model means you want to aim it, not chase it.
+        onInteract: () => {
+          props.lab.setState('spin', false);
+          setActive(null);
+        },
       });
       if (!s) { setStatus('unsupported'); return; }
       live = s;
@@ -59,6 +66,7 @@ export function HeartStage(props: { lab: Lab }) {
 
   const jumpTo = (name: ViewName) => {
     props.lab.setState('spin', false);
+    setActive(name);
     scene()?.setView(name);
   };
 
@@ -95,7 +103,16 @@ export function HeartStage(props: { lab: Lab }) {
           <span class="text-[13px] font-medium text-(--color-muted)">Jump to</span>
           <For each={views()}>
             {(v) => (
-              <Button variant="outline" size="sm" onClick={() => jumpTo(v.id)}>{v.label}</Button>
+              <Button
+                variant="outline" size="sm"
+                aria-pressed={active() === v.id}
+                class={active() === v.id
+                  ? 'border-(--color-accent) bg-(--color-accent-soft) text-(--color-ink)'
+                  : undefined}
+                onClick={() => jumpTo(v.id)}
+              >
+                {v.label}
+              </Button>
             )}
           </For>
           <p class="ml-auto text-xs text-(--color-muted)" aria-live="polite">{note()}</p>

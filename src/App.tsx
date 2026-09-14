@@ -57,60 +57,90 @@ export function App() {
           </p>
         </div>
 
-        {/* The model and its two primary controls sit together; everything the
-            reader changes is within reach of what it changes. */}
-        <section class="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]" aria-label="Interactive model">
-          <div class="grid min-w-0 gap-4">
-            <HeartStage lab={lab} />
-            <Scrubber lab={lab} />
+        {/* One reactive column beside a sticky control rail. Previously the
+            controls were a second column of their own height, which left a
+            screenful of dead space under the short one. */}
+        <div class="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_19rem] xl:grid-cols-[minmax(0,1fr)_20rem]">
+          <div class="grid min-w-0 gap-6">
+            <section class="grid gap-3" aria-label="Interactive model">
+              <HeartStage lab={lab} />
+              <Scrubber lab={lab} />
+            </section>
+
+            <section
+              class="grid items-start gap-6 md:grid-cols-[minmax(0,1fr)_14rem]"
+              aria-label="ECG and segment map"
+            >
+              <figure class="m-0 grid min-w-0 gap-2">
+                <figcaption class="text-[11px] font-bold uppercase tracking-[0.06em] text-(--color-muted)">
+                  12-lead ECG
+                </figcaption>
+                <EcgCanvas lab={lab} />
+              </figure>
+              <figure class="m-0 grid gap-2">
+                <figcaption class="text-[11px] font-bold uppercase tracking-[0.06em] text-(--color-muted)">
+                  AHA 17-segment map
+                </figcaption>
+                <Bullseye lab={lab} />
+              </figure>
+            </section>
+
+            <section aria-label="Findings">
+              <Findings lab={lab} />
+            </section>
           </div>
-          <Controls lab={lab} />
-        </section>
 
-        <section class="mt-8 grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_16rem]" aria-label="ECG and segment map">
-          <figure class="m-0 grid min-w-0 gap-2">
-            <figcaption class="text-[11px] font-bold uppercase tracking-[0.06em] text-(--color-muted)">
-              12-lead ECG
-            </figcaption>
-            <EcgCanvas lab={lab} />
-          </figure>
-          <figure class="m-0 grid gap-2">
-            <figcaption class="text-[11px] font-bold uppercase tracking-[0.06em] text-(--color-muted)">
-              AHA 17-segment map
-            </figcaption>
-            <Bullseye lab={lab} />
-          </figure>
-        </section>
-
-        <section class="mt-8" aria-label="Findings">
-          <Findings lab={lab} />
-        </section>
+          {/* Sticky so the occlusion and the timeline stay reachable while the
+              reader is down in the findings comparing them. */}
+          <div class="lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto lg:overscroll-contain lg:pr-1">
+            <Controls lab={lab} />
+          </div>
+        </div>
 
         <Reference />
       </main>
 
-      <footer class="border-t border-(--color-line) py-8">
-        <div class="mx-auto grid max-w-[84rem] gap-2 px-4 text-[13px] text-(--color-muted) md:px-6 xl:px-8">
-          <p class="m-0">
+      <footer class="mt-16 border-t border-(--color-line) bg-(--color-surface)">
+        <div class="mx-auto grid max-w-[84rem] gap-6 px-4 py-8 md:grid-cols-[minmax(0,1fr)_auto] md:px-6 xl:px-8">
+          {/* The disclaimer is the one thing in here that must not be skimmed,
+              so it keeps the weight and the rest drops to metadata. */}
+          <p class="m-0 max-w-(--measure) text-sm">
             <strong>For clinicians and students.</strong> A simplified model for
-            teaching anatomy and ECG–pathology correlation. Not for use in any
-            decision about a real patient.
+            teaching anatomy and ECG–pathology correlation.{' '}
+            <span class="text-(--color-warn)">
+              Not for use in any decision about a real patient.
+            </span>
           </p>
-          <p class="m-0">
-            Scanned anatomy: BodyParts3D, Copyright © The Database Center for Life
-            Science, licensed under{' '}
-            <a class="underline underline-offset-2 hover:text-(--color-ink)"
-              href="https://creativecommons.org/licenses/by-sa/2.1/jp/deed.en">
-              CC Attribution-Share Alike 2.1 Japan
-            </a>.
-          </p>
-          <p class="m-0">
-            Source:{' '}
-            <a class="underline underline-offset-2 hover:text-(--color-ink)"
-              href="https://github.com/sereneinserenade/coronary-ecg-lab">
-              github.com/sereneinserenade/coronary-ecg-lab
-            </a>
-          </p>
+
+          <ul class="m-0 grid gap-1.5 p-0 text-[13px] text-(--color-muted) md:justify-items-end md:text-right">
+            <li class="list-none">
+              <a
+                class="rounded underline decoration-(--color-line) underline-offset-4 transition-colors duration-150 hover:text-(--color-ink) hover:decoration-(--color-accent) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--color-accent)"
+                href="https://github.com/sereneinserenade/coronary-ecg-lab"
+              >
+                Source on GitHub
+              </a>
+            </li>
+            <li class="list-none">
+              Anatomy:{' '}
+              <a
+                class="rounded underline decoration-(--color-line) underline-offset-4 transition-colors duration-150 hover:text-(--color-ink) hover:decoration-(--color-accent) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--color-accent)"
+                href="https://dbarchive.biosciencedbc.jp/en/bodyparts3d/"
+              >
+                BodyParts3D
+              </a>
+              , ©&nbsp;The Database Center for Life Science
+            </li>
+            <li class="list-none">
+              <a
+                class="rounded underline decoration-(--color-line) underline-offset-4 transition-colors duration-150 hover:text-(--color-ink) hover:decoration-(--color-accent) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--color-accent)"
+                href="https://creativecommons.org/licenses/by-sa/2.1/jp/deed.en"
+              >
+                CC BY-SA 2.1 JP
+              </a>
+              {' · code MIT'}
+            </li>
+          </ul>
         </div>
       </footer>
     </>

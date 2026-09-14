@@ -46,7 +46,7 @@ export function AccordionContent(props: { children: JSX.Element; class?: string 
         'animate-kb-collapse-up data-[expanded]:animate-kb-collapse-down',
       )}
     >
-      <div class={cn('max-w-(--measure) pb-6', props.class)}>{props.children}</div>
+      <div class={cn('ref-prose min-w-0 pb-7 pt-1', props.class)}>{props.children}</div>
     </KAccordion.Content>
   );
 }

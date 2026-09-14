@@ -52,13 +52,15 @@ export function Controls(props: { lab: Lab }) {
       <div class="grid gap-3 rounded-(--radius-card) border border-(--color-line) bg-(--color-surface) p-4">
         <h3 class="text-[15px] font-semibold">{sc().name}</h3>
         <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-[13px]">
-          <dt class="font-semibold text-(--color-muted)">Wall</dt>
-          <dd class="m-0">{sc().wall}</dd>
-          <dt class="font-semibold text-(--color-muted)">Artery</dt>
-          <dd class="m-0">{sc().artery}</dd>
-          <dt class="font-semibold text-(--color-muted)">Vessels</dt>
-          <dd class="m-0">
-            <Show when={sc().dead.length} fallback="—">
+          {/* Five rows of em-dashes is not a baseline, it is noise. With nothing
+              occluded only the rate has anything to report. */}
+          <Show when={sc().dead.length}>
+            <dt class="font-semibold text-(--color-muted)">Wall</dt>
+            <dd class="m-0">{sc().wall}</dd>
+            <dt class="font-semibold text-(--color-muted)">Artery</dt>
+            <dd class="m-0">{sc().artery}</dd>
+            <dt class="font-semibold text-(--color-muted)">Vessels</dt>
+            <dd class="m-0">
               <For each={sc().dead}>
                 {(v, i) => (
                   <>
@@ -67,8 +69,8 @@ export function Controls(props: { lab: Lab }) {
                   </>
                 )}
               </For>
-            </Show>
-          </dd>
+            </dd>
+          </Show>
           <dt class="font-semibold text-(--color-muted)">Segments</dt>
           <dd class="m-0">
             {sc().segs.length
@@ -82,18 +84,18 @@ export function Controls(props: { lab: Lab }) {
 
       <fieldset class="grid gap-2 border-0 p-0">
         <legend class="mb-1 text-[13px] font-medium text-(--color-muted)">Layers</legend>
-        <div class="flex flex-wrap gap-2">
+        <div class="grid grid-cols-2 gap-1.5">
           <Checkbox label="Arteries" checked={lab.state.showArteries}
             onChange={(v) => lab.setState('showArteries', v)} />
           <Checkbox label="Veins" checked={lab.state.showVeins}
             onChange={(v) => lab.setState('showVeins', v)} />
-          <Checkbox label="RV & atria" checked={lab.state.showChambers}
+          <Checkbox label="RV &amp; atria" checked={lab.state.showChambers}
             onChange={(v) => lab.setState('showChambers', v)} />
-          <Checkbox label="Conduction system" checked={lab.state.showConduction}
+          <Checkbox label="Conduction" checked={lab.state.showConduction}
             onChange={(v) => lab.setState('showConduction', v)} />
-          <Checkbox label="Valves & papillary muscles" checked={lab.state.showInternals}
+          <Checkbox label="Valves" checked={lab.state.showInternals}
             onChange={(v) => lab.setState('showInternals', v)} />
-          <Checkbox label="Variant branches" checked={lab.state.showVariants}
+          <Checkbox label="Variants" checked={lab.state.showVariants}
             onChange={(v) => lab.setState('showVariants', v)} />
         </div>
       </fieldset>
@@ -117,7 +119,7 @@ export function Controls(props: { lab: Lab }) {
           <Select
             id="patient"
             label="ST threshold for"
-            description="The diagnostic bar in V2–V3 differs by age and sex: 2 mm for a man of 40 or over, 2.5 mm under 40, and 1.5 mm for a woman."
+            description="Sets the V2–V3 bar: 2 mm, 2.5 mm or 1.5 mm."
             value={lab.state.patient}
             options={PATIENTS.map((p) => ({ value: p.id as Patient, label: p.label }))}
             onChange={(v) => lab.setState('patient', v)}
@@ -130,9 +132,11 @@ export function Controls(props: { lab: Lab }) {
               onChange={(v) => lab.setState('geometry', v ? 'scanned' : 'procedural')} />
           </div>
 
-          <div class="grid gap-2">
-            <Label>Colour key</Label>
-            <ul class="grid grid-cols-2 gap-x-3 gap-y-1.5 p-0 text-xs text-(--color-muted)">
+          <details class="border-t border-(--color-line) pt-3">
+            <summary class="cursor-pointer list-none text-[13px] font-medium text-(--color-muted) marker:content-none hover:text-(--color-ink)">
+              Colour key
+            </summary>
+            <ul class="grid grid-cols-2 gap-x-3 gap-y-1.5 p-0 pt-3 text-xs text-(--color-muted)">
               <For each={LEGEND}>
                 {([name, colour]) => (
                   <li class="flex list-none items-center gap-2">
@@ -143,7 +147,7 @@ export function Controls(props: { lab: Lab }) {
                 )}
               </For>
             </ul>
-          </div>
+          </details>
         </div>
       </details>
     </aside>

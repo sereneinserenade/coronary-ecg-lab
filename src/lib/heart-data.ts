@@ -1344,6 +1344,108 @@ export function silhouetteCloud(step = 4): Vec3[] {
 }
 
 /* ------------------------------------------------------------------ *
+ * CAMERA FITTING
+ *
+ * Kept here, as pure maths on plain tuples, because it is the one piece of the
+ * renderer that is easy to get subtly wrong and easy to check numerically.
+ * ------------------------------------------------------------------ */
+
+/** The eight corners of an axis-aligned box. */
+export function boxCorners(min: Vec3, max: Vec3): Vec3[] {
+  const out: Vec3[] = [];
+  for (const x of [min[0], max[0]]) {
+    for (const y of [min[1], max[1]]) {
+      for (const z of [min[2], max[2]]) out.push([x, y, z]);
+    }
+  }
+  return out;
+}
+
+const sub3 = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const dot3 = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross3 = (a: Vec3, b: Vec3): Vec3 =>
+  [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const unit3 = (a: Vec3): Vec3 => {
+  const l = Math.hypot(a[0], a[1], a[2]) || 1;
+  return [a[0] / l, a[1] / l, a[2] / l];
+};
+
+/** The camera's own axes for a given view direction. `dir` points from the
+ *  target towards the camera. */
+export function viewBasis(dir: Vec3): { right: Vec3; up: Vec3 } {
+  const d = unit3(dir);
+  // Straight up or down the world Y axis leaves "up" undefined; pick another.
+  const hint: Vec3 = Math.abs(d[1]) > 0.95 ? [0, 0, 1] : [0, 1, 0];
+  const right = unit3(cross3(hint, d));
+  return { right, up: unit3(cross3(d, right)) };
+}
+
+/* How far back a perspective camera has to sit for every corner to be inside
+ * the frustum, given a vertical field of view in degrees and a width/height
+ * aspect. `margin` is the air left around the silhouette.
+ *
+ * The obvious shortcut — a bounding sphere — takes its radius from half the box
+ * diagonal, which for anything that is not roughly spherical overshoots badly:
+ * for the heart's chamber box it is about 45% too far, which is what leaves the
+ * model small in the middle of an empty viewport. Projecting the corners onto
+ * the camera's own axes and solving per corner gives the tight answer. */
+export function fitDistance(
+  corners: Vec3[], centre: Vec3, dir: Vec3, fovDeg: number, aspect: number, margin = 1.06,
+): number {
+  const d = unit3(dir);
+  const { right, up } = viewBasis(d);
+  const vHalf = ((fovDeg * Math.PI) / 180) / 2;
+  const hHalf = Math.atan(Math.tan(vHalf) * aspect);
+  let needed = 0;
+  for (const c of corners) {
+    const o = sub3(c, centre);
+    const depth = dot3(o, d);                       // towards the camera
+    needed = Math.max(
+      needed,
+      depth + Math.abs(dot3(o, up)) / Math.tan(vHalf),
+      depth + Math.abs(dot3(o, right)) / Math.tan(hHalf),
+    );
+  }
+  return needed * margin;
+}
+
+/* ------------------------------------------------------------------ *
+ * NAMED VIEWS
+ *
+ * These are CARDIAC views, so they are given in the heart's own frame and
+ * rotated into the chest by the renderer — not taken as world directions.
+ *
+ * The long axis really does lie about 44 degrees oblique in the chest, so a
+ * camera using world up shows the heart leaning at that angle. Correct, and
+ * unreadable: you cannot compare an anterior wall with an inferior one while
+ * both sit on the diagonal. Orienting the camera to the heart instead puts the
+ * apex at the bottom in every view — the way a specimen sits in the hand, and
+ * the way every textbook plate is drawn — without moving the model itself.
+ * ------------------------------------------------------------------ */
+export type ViewName = 'anterior' | 'inferior' | 'lateral' | 'septal' | 'apex' | 'anterolateral';
+
+export const VIEW_LOCAL: Record<ViewName, { dir: Vec3; up: Vec3 }> = {
+  anterior: { dir: [0, 0.12, 1], up: [0, 1, 0] },
+  inferior: { dir: [0, -0.1, -1], up: [0, 1, 0] },
+  lateral: { dir: [1, 0.1, 0.1], up: [0, 1, 0] },
+  septal: { dir: [-1, 0.1, 0.1], up: [0, 1, 0] },
+  // Down the long axis from the apex, anterior wall at the top — the same
+  // orientation as the AHA bullseye drawn beside it.
+  apex: { dir: [0, -1, 0], up: [0, 0, 1] },
+  anterolateral: { dir: [0.5, 0.12, 1], up: [0, 1, 0] },
+};
+
+/** Rotate a direction out of the cardiac frame and into the chest. */
+export function localDirToWorld(v: Vec3): Vec3 {
+  const { X, Y, Z } = heartBasis();
+  return unit3([
+    X[0] * v[0] + Y[0] * v[1] + Z[0] * v[2],
+    X[1] * v[0] + Y[1] * v[1] + Z[1] * v[2],
+    X[2] * v[0] + Y[2] * v[1] + Z[2] * v[2],
+  ]);
+}
+
+/* ------------------------------------------------------------------ *
  * SCANNED GEOMETRY
  * Radial sampler over a height map produced by tools/build_heart_meshes.py.
  * Lets the procedural coronaries follow a scanned surface instead of the

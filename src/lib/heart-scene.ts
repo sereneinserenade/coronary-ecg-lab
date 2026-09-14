@@ -9,14 +9,17 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {
   ANT_GROOVE, APEX_DIR, CONDUCTION, DOMINANCE, LAA, LA_POS, LV_LEN, LV_TOP,
   PAPILLARY, POST_GROOVE, RAA, RA_POS, RV_T0, RV_TIP, VALVES,
-  ahaSegment, conductionState, heartBasis, heightSampler, lvEndoPoint, lvPoint,
+  VIEW_LOCAL,
+  ahaSegment, conductionState, fitDistance, heartBasis, heightSampler, localDirToWorld,
+  lvEndoPoint, lvPoint,
   lvRadius, lvSurfY, lvWall, papillaryAxisPoints, rvInnerPoint, rvPoint,
   sampledPoint, shellMesh,
 } from './heart-data';
 import type {
   ConductionPart, DominanceId, HeightMap, PapillaryMuscle, Scenario, ShellSpec,
-  Stage, Vec3, VesselId,
+  Stage, Vec3, VesselId, ViewName,
 } from './heart-data';
+export type { ViewName };
 import * as PALETTE from './palette';
 
 /** Everything the scene needs to paint itself. A plain snapshot, never a signal. */
@@ -35,8 +38,6 @@ export interface SceneView {
   geometry: 'scanned' | 'procedural';
 }
 
-export type ViewName = 'anterior' | 'inferior' | 'lateral' | 'septal' | 'apex' | 'anterolateral';
-
 export const VIEW_NAMES: { id: ViewName; label: string }[] = [
   { id: 'anterior', label: 'Anterior' },
   { id: 'inferior', label: 'Inferior' },
@@ -54,6 +55,8 @@ export interface HeartScene {
 export interface SceneOptions {
   /** Status line for the geometry toggle. */
   onNote?: (note: string) => void;
+  /** The reader grabbed the model, so the idle spin should stop. */
+  onInteract?: () => void;
   /** Called when scanned geometry cannot be fetched, so the UI can fall back. */
   onScanFailed?: (err: unknown) => void;
 }
@@ -111,6 +114,13 @@ export function infarctColour(stage: Stage): THREE.Color {
 }
 
 const V3 = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
+
+/* Air left around the heart. fitDistance on its own returns the tightest
+ * distance that still clears every surface point, which puts the silhouette
+ * hard against the edges of the frame; this backs off enough that the great
+ * vessels and the coronaries at the margins are not cropped, and the reader has
+ * somewhere to grab. */
+const FRAMING_MARGIN = 1.2;
 
 export function createHeartScene(host: HTMLElement, opts: SceneOptions = {}): HeartScene | null {
   if (typeof WebGLRenderingContext === 'undefined') return null;
@@ -609,21 +619,36 @@ export function createHeartScene(host: HTMLElement, opts: SceneOptions = {}): He
 
   const APEX = new THREE.Vector3(...APEX_DIR).normalize();
 
-  const VIEW_DIRS: Record<Exclude<ViewName, 'apex'>, THREE.Vector3> = {
-    anterior: new THREE.Vector3(0, 0.18, 1),
-    inferior: new THREE.Vector3(0, -1, -0.32),
-    lateral: new THREE.Vector3(1, 0.12, 0.18),
-    septal: new THREE.Vector3(-1, 0.12, 0.18),
-    // The anterolateral oblique you would use looking at a specimen on the table.
-    anterolateral: new THREE.Vector3(0.5, 0.28, 1),
-  };
+  const toWorld = (v: Vec3) => new THREE.Vector3(...localDirToWorld(v));
 
   let heartCentre = new THREE.Vector3();
   let heartRadius = 8;
+  // Sampled chamber surface, in world space, for framing.
+  let hull: Vec3[] = [];
+  // The view the reader last asked for, so a resize re-frames to the same one.
+  // Anterior by default: the sternocostal surface, the way the heart faces you
+  // on the table. An oblique makes the reader reorient before they can read it.
+  let framed: ViewName = 'anterior';
 
   function frameCamera(name: ViewName) {
-    const dir = (name === 'apex' ? APEX.clone() : VIEW_DIRS[name].clone()).normalize();
-    const dist = (heartRadius / Math.sin(((camera.fov * Math.PI) / 180) / 2)) * 0.95;
+    // A named view has to mean what it says, so undo any spin first — otherwise
+    // "Anterior" shows whatever the rotation happened to have drifted to.
+    spinner.rotation.set(0, 0, 0);
+    spinner.updateMatrixWorld(true);
+
+    const spec = VIEW_LOCAL[name];
+    const dir = toWorld(spec.dir);
+    // OrbitControls reads camera.up, so setting it here is what stands the heart
+    // upright; it also becomes the axis the reader's drag orbits around.
+    camera.up.copy(toWorld(spec.up));
+
+    const dist = fitDistance(
+      hull,
+      [heartCentre.x, heartCentre.y, heartCentre.z],
+      [dir.x, dir.y, dir.z],
+      camera.fov, camera.aspect, FRAMING_MARGIN,
+    );
+    if (!Number.isFinite(dist) || dist <= 0) return;
     camera.position.copy(heartCentre).addScaledVector(dir, dist);
     controls.target.copy(heartCentre);
     controls.update();
@@ -631,16 +656,79 @@ export function createHeartScene(host: HTMLElement, opts: SceneOptions = {}): He
 
   // The scanned meshes are a different size to the procedural ones, so the framing
   // worked out at boot no longer fits once they load.
+  /** The chambers only. Framing on the whole group instead means framing on the
+   *  aorta and the cavae, which reach a third again as far as the heart does and
+   *  leave the heart small in the middle of a lot of empty space. */
+  function chamberMeshes(): THREE.Mesh[] {
+    const out: THREE.Mesh[] = [];
+    const add = (m?: THREE.Object3D | null) => { if (m) out.push(m as THREE.Mesh); };
+    add(lvMesh);
+    add(rvMesh);
+    for (const m of chamberExtras) if (m.userData.kind === 'atrium') add(m);
+    if (scanned) for (const m of Object.values(scanned.meshes)) add(m);
+    return out.filter((m) => m.geometry?.attributes?.position);
+  }
+
+  /* World-space points on the chamber surfaces, thinned out.
+   *
+   * The eight corners of a bounding box are not on a rounded heart — the near
+   * top corner sits several centimetres off the muscle and pushes the camera
+   * back for empty air. Sampling the surface itself fits what you can actually
+   * see. Every nth vertex is plenty: the extreme points that decide the framing
+   * are not going to hide in the gaps. */
+  function chamberPoints(): Vec3[] {
+    const pts: Vec3[] = [];
+    const v = new THREE.Vector3();
+    for (const mesh of chamberMeshes()) {
+      const pos = mesh.geometry.attributes.position as THREE.BufferAttribute;
+      const step = Math.max(1, Math.floor(pos.count / 1500));
+      mesh.updateMatrixWorld(true);
+      for (let i = 0; i < pos.count; i += step) {
+        v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld);
+        pts.push([v.x, v.y, v.z]);
+      }
+    }
+    return pts;
+  }
+
   function refit() {
-    group.updateMatrixWorld(true);
-    const sphere = new THREE.Box3().setFromObject(group).getBoundingSphere(new THREE.Sphere());
-    if (!sphere.radius) return;
-    heartCentre = sphere.center.clone();
-    heartRadius = sphere.radius;
-    controls.minDistance = heartRadius * 0.8;
-    controls.maxDistance = heartRadius * 6;
+    // Measure with the spin undone. chamberPoints reads matrixWorld, so a heart
+    // caught mid-rotation would otherwise yield a rotated centre — and the pivot
+    // would end up off the heart again, which is the whole bug being fixed here.
+    const spun = spinner.quaternion.clone();
+    spinner.quaternion.identity();
+    spinner.position.set(0, 0, 0);
+    group.position.set(0, 0, 0);
+    spinner.updateMatrixWorld(true);
+
+    const pts = chamberPoints();
+    if (!pts.length) return;
+    const lo: Vec3 = [Infinity, Infinity, Infinity];
+    const hi: Vec3 = [-Infinity, -Infinity, -Infinity];
+    for (const p of pts) {
+      for (let i = 0; i < 3; i++) {
+        if (p[i]! < lo[i]!) lo[i] = p[i]!;
+        if (p[i]! > hi[i]!) hi[i] = p[i]!;
+      }
+    }
+    heartCentre.set((lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2);
+
+    // Park the pivot on the heart and pull the anatomy back by the same vector,
+    // so world positions are unchanged but the spin now turns about the centre.
+    spinner.position.copy(heartCentre);
+    group.position.copy(heartCentre).negate();
+    spinner.updateMatrixWorld(true);
+
+    hull = pts;
+    heartRadius = Math.max(...pts.map((p) =>
+      Math.hypot(p[0] - heartCentre.x, p[1] - heartCentre.y, p[2] - heartCentre.z)));
+    controls.minDistance = heartRadius * 0.5;
+    controls.maxDistance = heartRadius * 8;
     controls.target.copy(heartCentre);
     controls.update();
+
+    spinner.quaternion.copy(spun);
+    spinner.updateMatrixWorld(true);
   }
 
   /* --- painting -------------------------------------------------------- */
@@ -791,7 +879,16 @@ export function createHeartScene(host: HTMLElement, opts: SceneOptions = {}): He
   const camera = new THREE.PerspectiveCamera(42, host.clientWidth / host.clientHeight, 0.1, 400);
   const controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
-  controls.dampingFactor = 0.07;
+  // 0.07 leaves the camera coasting long after the pointer stops, which reads as
+  // lag rather than smoothness.
+  controls.dampingFactor = 0.14;
+  controls.rotateSpeed = 0.85;
+  controls.zoomSpeed = 0.8;
+  // Panning slides the heart out of frame with no obvious way back, and the
+  // named views already cover every angle worth reaching.
+  controls.enablePan = false;
+  // Taking hold of the model is a clear statement that you want it to hold still.
+  controls.addEventListener('start', () => opts.onInteract?.());
 
   scene.add(new THREE.HemisphereLight('#ffffff', '#40363a', 1.1));
   const key = new THREE.DirectionalLight('#fff4ec', 1.45);
@@ -800,8 +897,15 @@ export function createHeartScene(host: HTMLElement, opts: SceneOptions = {}): He
   rim.position.set(-8, 1, -9);
   scene.add(key, rim);
 
+  // Two nested groups on purpose. `spinner` is what rotates, and it is parked at
+  // the heart's own centre; `group` holds the anatomy, offset back by the same
+  // amount so nothing moves in world space. Rotating `group` directly turns it
+  // about the world origin instead, which is several centimetres off the heart —
+  // the model then orbits sideways out of frame while it spins.
+  const spinner = new THREE.Group();
   const group = new THREE.Group();
-  scene.add(group);
+  spinner.add(group);
+  scene.add(spinner);
 
   buildLV();
   buildRV();
@@ -826,14 +930,18 @@ export function createHeartScene(host: HTMLElement, opts: SceneOptions = {}): He
       new THREE.Vector3(...X), new THREE.Vector3(...Y), new THREE.Vector3(...Z)));
   }
   refit();
-  frameCamera('anterolateral');
+  frameCamera(framed);
 
   const resize = new ResizeObserver(() => {
     const w = host.clientWidth, h = host.clientHeight;
     if (!w || !h) return;
+    const wasSquarer = camera.aspect;
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     renderer.setSize(w, h);
+    // Re-frame only when the shape of the box changed enough to matter, so a
+    // reader who has zoomed in is not yanked back out by a scrollbar appearing.
+    if (Math.abs(wasSquarer - camera.aspect) > 0.15) frameCamera(framed);
   });
   resize.observe(host);
 
@@ -844,7 +952,7 @@ export function createHeartScene(host: HTMLElement, opts: SceneOptions = {}): He
   renderer.setAnimationLoop((now: number) => {
     const dt = (now - last) / 1000;
     last = now;
-    if (view?.spin && !calm) group.rotateOnWorldAxis(spinAxis, dt * 0.22);
+    if (view?.spin && !calm) spinner.rotateOnWorldAxis(spinAxis, dt * 0.22);
     if (lesionMarker.visible && !calm) lesionMarker.scale.setScalar(1 + Math.sin(now / 220) * 0.22);
     controls.update();
     renderer.render(scene, camera);
@@ -865,7 +973,7 @@ export function createHeartScene(host: HTMLElement, opts: SceneOptions = {}): He
       }
       paint(next);
     },
-    setView: frameCamera,
+    setView(name: ViewName) { framed = name; frameCamera(name); },
     dispose() {
       renderer.setAnimationLoop(null);
       resize.disconnect();

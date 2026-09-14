@@ -36,6 +36,9 @@ export function Bullseye(props: { lab: Lab }) {
     props.lab.stage().id !== 0 && props.lab.scenario().segs.includes(seg);
   const fill = (seg: SegmentId) =>
     hit(seg) ? infarctHex(props.lab.stage()) : 'var(--color-elevated)';
+  // The segment number, so a reader can name what is lit without counting round.
+  const centre = (rIn: number, rOut: number, a0: number, a1: number) =>
+    polar(120, 120, (rIn + rOut) / 2, (a0 + a1) / 2);
 
   const label = (x: number, y: number, text: string, anchor: 'start' | 'middle' | 'end' = 'middle') => (
     <text x={x} y={y} text-anchor={anchor}
@@ -45,7 +48,7 @@ export function Bullseye(props: { lab: Lab }) {
   return (
     <svg
       viewBox="0 0 240 240" role="img"
-      class="mx-auto block h-auto w-full max-w-56"
+      class="mx-auto block h-auto w-full max-w-64"
       aria-label={`Bullseye plot of the seventeen left ventricular segments. ${
         props.lab.stage().id === 0 || props.lab.scenario().segs.length === 0
           ? 'No segment is infarcted.'
@@ -53,26 +56,37 @@ export function Bullseye(props: { lab: Lab }) {
     >
       <For each={RINGS}>
         {([seg, rIn, rOut, a0, a1]) => (
-          <path
-            d={ringPath(120, 120, rIn, rOut, a0, a1)}
-            fill={fill(seg)}
-            stroke={hit(seg) ? 'var(--color-ink)' : 'var(--color-line)'}
-            stroke-width={hit(seg) ? 1.2 : 1}
-            class="transition-[fill] duration-200 ease-out"
-          >
-            <title>{`${seg}. ${SEG_NAME[seg]}`}</title>
-          </path>
+          <>
+            <path
+              d={ringPath(120, 120, rIn, rOut, a0, a1)}
+              fill={fill(seg)}
+              stroke="var(--color-line)"
+              stroke-width={hit(seg) ? 1.6 : 1}
+              class="transition-[fill] duration-200 ease-out"
+            >
+              <title>{`${seg}. ${SEG_NAME[seg]}`}</title>
+            </path>
+            <text
+              x={centre(rIn, rOut, a0, a1)[0]} y={centre(rIn, rOut, a0, a1)[1] + 3.5}
+              text-anchor="middle"
+              class="pointer-events-none text-[9px] font-semibold"
+              fill={hit(seg) ? '#1c1a17' : 'var(--color-muted)'}
+            >{seg}</text>
+          </>
         )}
       </For>
       <circle
         cx={120} cy={120} r={26}
         fill={fill(17)}
-        stroke={hit(17) ? 'var(--color-ink)' : 'var(--color-line)'}
-        stroke-width={hit(17) ? 1.2 : 1}
+        stroke="var(--color-line)"
+        stroke-width={hit(17) ? 1.6 : 1}
         class="transition-[fill] duration-200 ease-out"
       >
         <title>17. apex</title>
       </circle>
+      <text x={120} y={123.5} text-anchor="middle"
+        class="pointer-events-none text-[9px] font-semibold"
+        fill={hit(17) ? '#1c1a17' : 'var(--color-muted)'}>17</text>
       {label(120, 14, 'ANTERIOR')}
       {label(120, 236, 'INFERIOR')}
       {label(12, 124, 'SEPTAL', 'start')}

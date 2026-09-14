@@ -10,6 +10,7 @@ import {
   POST_GROOVE, RA_POS, RV_BULGE, RV_T0, RV_TILT, RV_TIP, RV_WALL, SCENARIOS,
   SCENARIO_HR, SEG_NAME, SILHOUETTE_APEX_FRAC, SILHOUETTE_ASPECT, STAGES, TERRITORY,
   VALVES, VESSEL_IDS, ahaSegment, baseTilt, beat, conductionState, conductionSummary,
+  boxCorners, fitDistance, viewBasis, VIEW_LOCAL, localDirToWorld,
   heightSampler, leadState, localToWorld, lvEndo, lvEndoPoint, lvPoint,
   lvRadius, lvSurfY, lvWall, lvY, papillaryAxisPoints, rrFor, rvBulge, rvDir,
   rvInnerPoint, rvPoint, rvRadius, sampledPoint, shellMesh, silhouetteCloud,
@@ -538,6 +539,146 @@ describe('heart lab', () => {
   });
   
   
+  /* ---- camera fitting ---- */
+
+  it('every corner of the box lands inside the frustum, and only just', () => {
+    const min: DATA.Vec3 = [-5, -6, -4], max: DATA.Vec3 = [5, 3, 4];
+    const centre: DATA.Vec3 = [0, -1.5, 0];
+    const corners = boxCorners(min, max);
+    assert.equal(corners.length, 8);
+
+    for (const dir of [[0, 0, 1], [1, 0, 0], [0, 1, 0], [0.5, 0.28, 1], [0.55, -0.72, 0.42]] as DATA.Vec3[]) {
+      for (const aspect of [0.6, 1, 1.85, 3]) {
+        const fov = 42, margin = 1.06;
+        const d = (() => { const l = Math.hypot(...dir); return dir.map((v) => v / l) as DATA.Vec3; })();
+        const dist = fitDistance(corners, centre, d, fov, aspect, margin);
+        const { right, up } = viewBasis(d);
+        const vHalf = ((fov * Math.PI) / 180) / 2;
+        const hHalf = Math.atan(Math.tan(vHalf) * aspect);
+        const eye = centre.map((c, i) => c + d[i]! * dist) as DATA.Vec3;
+
+        let worstV = 0, worstH = 0;
+        for (const c of corners) {
+          const o = c.map((v, i) => v - eye[i]!) as DATA.Vec3;
+          // Depth along the view axis, from the camera towards the target.
+          const depth = -(o[0] * d[0]! + o[1] * d[1]! + o[2] * d[2]!);
+          assert.ok(depth > 0, `corner behind the camera at aspect ${aspect}`);
+          const v = Math.abs(o[0] * up[0]! + o[1] * up[1]! + o[2] * up[2]!) / (depth * Math.tan(vHalf));
+          const h = Math.abs(o[0] * right[0]! + o[1] * right[1]! + o[2] * right[2]!) / (depth * Math.tan(hHalf));
+          worstV = Math.max(worstV, v);
+          worstH = Math.max(worstH, h);
+        }
+        // Inside the frame...
+        assert.ok(worstV <= 1 && worstH <= 1,
+          `corner clipped at aspect ${aspect}: v=${worstV.toFixed(3)} h=${worstH.toFixed(3)}`);
+        // ...and filling it. A bounding-sphere fit scores about 0.7 here, which
+        // is the gap that left the heart small in an empty viewport.
+        assert.ok(Math.max(worstV, worstH) > 0.82,
+          `only filling ${(Math.max(worstV, worstH) * 100).toFixed(0)}% at aspect ${aspect}`);
+      }
+    }
+  });
+
+  it('fitting beats a bounding sphere on a heart-shaped box', () => {
+    const corners = boxCorners([-5, -6, -4], [5, 3, 4]);
+    const centre: DATA.Vec3 = [0, -1.5, 0];
+    const dir: DATA.Vec3 = [0, 0, 1];
+    const tight = fitDistance(corners, centre, dir, 42, 1.85);
+    // What the old code did: half the box diagonal, fitted vertically.
+    const radius = Math.max(...corners.map((c) => Math.hypot(c[0] - centre[0], c[1] - centre[1], c[2] - centre[2])));
+    const sphere = (radius / Math.sin(((42 * Math.PI) / 180) / 2)) * 1.08;
+    assert.ok(tight < sphere * 0.75,
+      `sphere fit ${sphere.toFixed(1)} vs corner fit ${tight.toFixed(1)} — expected a clear gain`);
+  });
+
+  it('the view basis stays well defined looking straight down the long axis', () => {
+    for (const dir of [[0, 1, 0], [0, -1, 0], [0, 0.999, 0.001]] as DATA.Vec3[]) {
+      const { right, up } = viewBasis(dir);
+      for (const v of [right, up]) {
+        assert.ok(Math.abs(Math.hypot(...v) - 1) < 1e-9, 'basis vector should be unit length');
+        assert.ok(v.every(Number.isFinite), 'basis went non-finite straight down the axis');
+      }
+      const d = (() => { const l = Math.hypot(...dir); return dir.map((x) => x / l); })();
+      assert.ok(Math.abs(right[0] * up[0] + right[1] * up[1] + right[2] * up[2]) < 1e-9, 'right and up should be perpendicular');
+      assert.ok(Math.abs(right[0] * d[0]! + right[1] * d[1]! + right[2] * d[2]!) < 1e-9, 'right should be perpendicular to the view');
+    }
+  });
+
+
+  it('every named view stands the heart on its apex and names its own face', () => {
+    // Where a local landmark lands on screen, in camera axes.
+    const dot3 = (a: DATA.Vec3, b: DATA.Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const cross3 = (a: DATA.Vec3, b: DATA.Vec3): DATA.Vec3 =>
+      [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+    const unit = (a: DATA.Vec3): DATA.Vec3 => {
+      const l = Math.hypot(...a); return [a[0] / l, a[1] / l, a[2] / l];
+    };
+    const LOCAL = {
+      apex: [0, -1, 0], base: [0, 1, 0], anterior: [0, 0, 1],
+      inferior: [0, 0, -1], lateral: [1, 0, 0], septal: [-1, 0, 0],
+    } satisfies Record<string, DATA.Vec3>;
+
+    const screen = (view: DATA.ViewName) => {
+      const spec = VIEW_LOCAL[view];
+      const dir = localDirToWorld(spec.dir);          // target towards camera
+      const right = unit(cross3(localDirToWorld(spec.up), dir));
+      const up = unit(cross3(dir, right));
+      return Object.fromEntries(Object.entries(LOCAL).map(([k, v]) => {
+        const w = localDirToWorld(v as DATA.Vec3);
+        return [k, { x: dot3(w, right), y: dot3(w, up), z: dot3(w, dir) }];
+      })) as Record<keyof typeof LOCAL, { x: number; y: number; z: number }>;
+    };
+
+    // Apex down and base up in every view that looks side-on at the heart.
+    for (const view of ['anterior', 'inferior', 'lateral', 'septal', 'anterolateral'] as DATA.ViewName[]) {
+      const p = screen(view);
+      assert.ok(p.apex.y < -0.9, `${view}: the apex should hang straight down, got y=${p.apex.y.toFixed(2)}`);
+      assert.ok(p.base.y > 0.9, `${view}: the base should sit at the top`);
+    }
+
+    // Each view faces the surface it is named after.
+    const faces: [DATA.ViewName, keyof typeof LOCAL][] = [
+      ['anterior', 'anterior'], ['inferior', 'inferior'],
+      ['lateral', 'lateral'], ['septal', 'septal'],
+    ];
+    for (const [view, surface] of faces) {
+      const p = screen(view);
+      assert.ok(p[surface].z > 0.95, `${view} should look straight at the ${surface} surface`);
+    }
+
+    // Anterior is what a reader looks at first: the patient's left is on the
+    // right of the screen, as it is on every chest film and every plate.
+    const ant = screen('anterior');
+    assert.ok(ant.lateral.x > 0.9, 'the LV free wall belongs on the right in an anterior view');
+    assert.ok(ant.septal.x < -0.9, 'the septum belongs on the left in an anterior view');
+
+    // Going round the back mirrors left and right, as it must.
+    const inf = screen('inferior');
+    assert.ok(inf.lateral.x < 0, 'the inferior view should mirror the anterior one');
+
+    // The short axis must match the bullseye drawn beside it, or the two
+    // readouts of the same territory disagree on screen.
+    const sa = screen('apex');
+    assert.ok(sa.apex.z > 0.9, 'the short axis looks up the long axis from the apex');
+    assert.ok(sa.anterior.y > 0.9, 'anterior at the top, as on the bullseye');
+    assert.ok(sa.inferior.y < -0.9, 'inferior at the bottom');
+    assert.ok(sa.lateral.x > 0.9, 'lateral to the right');
+    assert.ok(sa.septal.x < -0.9, 'septal to the left');
+  });
+
+  it('the view table is complete and every direction is usable', () => {
+    for (const [name, spec] of Object.entries(VIEW_LOCAL)) {
+      for (const v of [spec.dir, spec.up]) {
+        assert.ok(Math.hypot(...v) > 0.5, `${name}: degenerate vector`);
+        assert.ok(v.every(Number.isFinite), `${name}: non-finite vector`);
+      }
+      // A view direction parallel to its own up has no defined camera roll.
+      const d = spec.dir, u = spec.up;
+      const cosine = (d[0] * u[0] + d[1] * u[1] + d[2] * u[2]) / (Math.hypot(...d) * Math.hypot(...u));
+      assert.ok(Math.abs(cosine) < 0.9, `${name}: up is nearly parallel to the view direction`);
+    }
+  });
+
   /* ---- mesh topology ---- */
   
   const LV_SPEC = {

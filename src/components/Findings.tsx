@@ -44,7 +44,7 @@ export function Findings(props: { lab: Lab }) {
   }));
 
   return (
-    <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+    <div class="grid gap-4 sm:grid-cols-2">
       <Panel title="ECG">
         <p class="m-0">{sc().leads}</p>
         <LeadRow leads={sc().elevate} kind="up" />

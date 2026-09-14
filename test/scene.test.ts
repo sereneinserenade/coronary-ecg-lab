@@ -9,6 +9,8 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 vi.mock('three', () => import('./three-stub'));
 vi.mock('three/addons/controls/OrbitControls.js', () => import('./orbit-stub'));
 
+import { OrbitControls } from './orbit-stub';
+
 import { DOMINANCE, SCENARIOS, STAGES, withDominance } from '~/lib/heart-data';
 import type { DominanceId } from '~/lib/heart-data';
 import { createHeartScene, VIEW_NAMES, infarctColour } from '~/lib/heart-scene';
@@ -118,6 +120,18 @@ describe('heart scene', () => {
     // Stage 0 and 1 are deliberately identical: nothing is visible yet at 30 min.
     expect(new Set(seen).size).toBeGreaterThanOrEqual(STAGES.length - 1);
     expect(seen[0]).toBe(seen[1]);
+  });
+
+  it('grabbing the model stops the idle spin', () => {
+    const onInteract = vi.fn();
+    const scene = createHeartScene(host(), { onInteract })!;
+    scene.update(baseView({ spin: true }));
+    // The scene subscribes to OrbitControls' own start event rather than
+    // guessing at pointer handling, so the stub replays that event.
+    const controls = (OrbitControls as unknown as { last?: { emit(t: string): void } }).last;
+    controls?.emit('start');
+    expect(onInteract).toHaveBeenCalled();
+    scene.dispose();
   });
 
   it('exports the swatches the legend renders', () => {

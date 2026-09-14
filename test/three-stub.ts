@@ -16,8 +16,15 @@ export class Vector3 {
   length() { return Math.hypot(this.x, this.y, this.z); }
   normalize() { const l = this.length() || 1; return this.set(this.x / l, this.y / l, this.z / l); }
   addScaledVector(v: Vector3, s: number) { return this.set(this.x + v.x * s, this.y + v.y * s, this.z + v.z * s); }
+  distanceTo(v: Vector3) { return Math.hypot(this.x - v.x, this.y - v.y, this.z - v.z); }
+  sub(v: Vector3) { return this.set(this.x - v.x, this.y - v.y, this.z - v.z); }
+  dot(v: Vector3) { return this.x * v.x + this.y * v.y + this.z * v.z; }
+  crossVectors(a: Vector3, b: Vector3) {
+    return this.set(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x);
+  }
   setScalar(s: number) { return this.set(s, s, s); }
   fromBufferAttribute(a: BufferAttribute, i: number) { return this.set(a.getX(i), a.getY(i), a.getZ(i)); }
+  applyMatrix4() { return this; }
 }
 
 export class Color {
@@ -32,6 +39,8 @@ export class Color {
 export class Quaternion {
   setFromUnitVectors() { return this; }
   setFromRotationMatrix() { return this; }
+  identity() { return this; }
+  clone() { return new Quaternion(); }
   copy() { return this; }
 }
 export class Matrix4 { makeBasis() { return this; } }
@@ -42,6 +51,7 @@ export class Object3D {
   visible = true;
   position = new Vector3();
   scale = new Vector3(1, 1, 1);
+  rotation = { set(_x: number, _y: number, _z: number) {} };
   quaternion = new Quaternion();
   add(...o: Object3D[]) { this.children.push(...o); return this; }
   remove(o: Object3D) { const i = this.children.indexOf(o); if (i >= 0) this.children.splice(i, 1); return this; }
@@ -139,12 +149,25 @@ export class Mesh extends Object3D {
 }
 
 export class Box3 {
-  setFromObject() { return this; }
-  getBoundingSphere(s: Sphere) { s.center = new Vector3(0, 0, 0); s.radius = 8; return s; }
+  // A fixed heart-sized box. The real bounds need geometry the stub does not
+  // build; what matters here is that the scene reads min/max and gets finite
+  // numbers back, so the fitting maths runs for real. Its correctness is
+  // checked numerically against known boxes in heart-data.test.ts.
+  min = new Vector3(-5, -6, -4);
+  max = new Vector3(5, 3, 4);
+  private filled = false;
+  setFromObject() { this.filled = true; return this; }
+  expandByObject() { this.filled = true; return this; }
+  isEmpty() { return !this.filled; }
+  getCenter(v: Vector3) { return v.set(0, -1.5, 0); }
+  getBoundingSphere(s: Sphere) { s.center = new Vector3(0, -1.5, 0); s.radius = 8; return s; }
 }
 export class Sphere { center = new Vector3(); radius = 0; }
 
 export class PerspectiveCamera extends Object3D {
+  // OrbitControls orients itself from camera.up, and the scene sets it per view
+  // to stand the heart on its apex, so the stub has to carry a real vector.
+  up = new Vector3(0, 1, 0);
   constructor(public fov: number, public aspect: number) { super(); }
   updateProjectionMatrix() {}
 }

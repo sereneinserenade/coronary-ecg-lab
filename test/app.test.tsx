@@ -74,8 +74,8 @@ describe('the page shell', () => {
 
   it('every layer toggle flips and reports its state', () => {
     render(() => <App />);
-    for (const name of [/^Arteries$/, /^Veins$/, /RV & atria/, /Conduction system/,
-                        /Valves & papillary muscles/, /Variant branches/, /^Rotate$/, /Scanned anatomy/]) {
+    for (const name of [/^Arteries$/, /^Veins$/, /RV & atria/, /^Conduction$/,
+                        /^Valves$/, /^Variants$/, /^Rotate$/, /Scanned anatomy/]) {
       const box = screen.getByRole('checkbox', { name }) as HTMLInputElement;
       const before = box.checked;
       fireEvent.click(box);
@@ -87,12 +87,39 @@ describe('the page shell', () => {
 
   it('the reference is present and its content survived the migration', () => {
     render(() => <App />);
-    expect(screen.getByRole('button', { name: /Wall by wall/i })).toBeInTheDocument();
-    // The first block is open by default, so its table is already rendered.
-    expect(screen.getByText(/Posterior third of the LV on short-axis slice/i)).toBeInTheDocument();
-    for (const title of [/three discriminations/i, /reciprocal change is not a separate/i,
+    const ref = within(screen.getByRole('region', { name: 'Reference' }));
+    // Each section is reachable twice over: from the index and from its heading.
+    for (const title of [/Wall by wall/i, /three discriminations/i,
+                         /reciprocal change is not a separate/i,
                          /conduction system, and why its blood supply/i, /Dominance, and why/i]) {
-      expect(screen.getByRole('button', { name: title })).toBeInTheDocument();
+      expect(ref.getAllByRole('button', { name: title }).length).toBe(2);
+    }
+    // The first block is open by default, so its table is already rendered.
+    expect(ref.getByText(/Posterior third of the LV on short-axis slice/i)).toBeInTheDocument();
+  });
+
+  it('the reference index opens a section and expand-all opens every one', () => {
+    render(() => <App />);
+    const ref = within(screen.getByRole('region', { name: 'Reference' }));
+    const index = within(ref.getByRole('navigation', { name: /Reference sections/i }));
+
+    // A closed section has no content on the page until it is asked for.
+    expect(ref.queryByText(/South African flag|de Winter/i)).not.toBeInTheDocument();
+    fireEvent.click(index.getByRole('button', { name: /occlusions in disguise/i }));
+    expect(ref.getByText(/De Winter T waves/i)).toBeInTheDocument();
+
+    const toggle = ref.getByRole('button', { name: /Expand all/i });
+    fireEvent.click(toggle);
+    expect(ref.getByRole('button', { name: /Collapse all/i })).toBeInTheDocument();
+    // Something from the last section proves they all opened.
+    expect(ref.getByText(/Thebesian veins/i)).toBeInTheDocument();
+    // Kobalte keeps a panel mounted after it has been opened once, so it can
+    // animate the height back down. aria-expanded is the honest signal.
+    fireEvent.click(ref.getByRole('button', { name: /Collapse all/i }));
+    for (const heading of ref.getAllByRole('button', { name: /Wall by wall|venous side/i })) {
+      if (heading.hasAttribute('aria-expanded')) {
+        expect(heading).toHaveAttribute('aria-expanded', 'false');
+      }
     }
   });
 });
