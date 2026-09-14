@@ -683,7 +683,6 @@ describe('heart lab', () => {
   });
   
   
-  /* ---- heart.js cannot be loaded here (it needs WebGL), so check its bindings statically ---- */
   
   // Import hygiene is enforced by tsc: noUnusedLocals catches an unused import
   // and a missing one is a type error, both on every build.

@@ -7,7 +7,7 @@ https://dbarchive.biosciencedbc.jp/en/bodyparts3d/
 
 Reads only the element meshes it needs, straight out of the remote zip via HTTP
 range requests, then registers them into the local cardiac frame used by
-heart-data.js (+x patient's left, +y towards the base, +z anterior, origin on the
+src/lib/heart-data.ts (+x patient's left, +y towards the base, +z anterior, origin on the
 left ventricular long axis) so the existing AHA segment maths applies unchanged.
 
     python3 tools/build_heart_meshes.py
