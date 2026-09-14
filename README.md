@@ -8,6 +8,8 @@ like in the hand from thirty minutes to two months.
 **For clinicians and students.** Deliberately simplified. Coronary anatomy varies,
 ECG patterns overlap, and nothing here should inform a decision about a real patient.
 
+<https://sereneinserenade.github.io/coronary-ecg-lab/>
+
 ## What's in it
 
 - **3D heart** — procedurally generated from measured anatomy, with an optional
@@ -19,9 +21,6 @@ ECG patterns overlap, and nothing here should inform a decision about a real pat
   it rebuilds the tree: the artery that reaches the crux changes, the posterior
   descending changes parent, and the inferior segments move between territories.
   In a left-dominant heart an RCA occlusion barely touches the left ventricle.
-- **11 occlusion scenarios** — left main, proximal/mid/wrap-around LAD, first
-  diagonal, circumflex, proximal and mid RCA, posterior, and circumferential
-  subendocardial for contrast.
 - **12-lead ECG built on the hexaxial system** — each occlusion carries an injury
   axis in degrees, and every frontal lead is one projection of that single arrow,
   so reciprocal change is physics rather than a hand-written list. The four
@@ -36,39 +35,69 @@ ECG patterns overlap, and nothing here should inform a decision about a real pat
 - **Pathology timeline** — 10 stages tying the ECG to gross specimen, microscopy,
   TTC staining and the complication risks that track the softening.
 
-## Running it
+## Stack
 
-No build step and no package manager. Three.js loads from a CDN; everything else
-is plain HTML, CSS and ES modules.
+SolidJS, TypeScript and Vite, with Tailwind CSS v4 for styling and shadcn-style
+components built on [Kobalte](https://kobalte.dev) primitives in
+`src/components/ui`. The components are vendored rather than pulled from a
+generator: the `shadcn-solid` CLI has not shipped since March 2025 and targets
+Tailwind v3, and `solidcn` is at 0.1.0, while Kobalte — what both are built on —
+is actively maintained. Copying the components in is shadcn's own distribution
+model, so nothing is lost but the dependency.
 
-    python3 tools/serve.py        # http://127.0.0.1:8000
-    node test_heart.mjs           # 53 checks — data, maths and geometry
-    node test_render.mjs          # 8 checks — the render path, against stubs
+    npm install
+    npm run dev          # http://localhost:5173/coronary-ecg-lab/
+    npm run build        # typecheck, then a production build into dist/
+    npm test             # 69 checks
+    npm run typecheck
 
-`test_heart.mjs` covers the clinical data, the ECG maths (including Einthoven's
-law across every scenario, stage and instant), the dominance model, the heart
-geometry, mesh topology, the anatomical invariants and the scanned mesh manifest.
+## Layout
 
-`test_render.mjs` stubs Three.js and the DOM so `heart.js` can be driven in Node,
-then walks every occlusion, stage, dominance and layer toggle. It does not check
-that the picture looks right; it checks that the code drawing it runs.
+| Path | What it holds |
+| --- | --- |
+| `src/lib/heart-data.ts` | The clinical content and the shape maths. No renderer, no DOM, no Solid. |
+| `src/lib/heart-scene.ts` | The Three.js scene. Framework-agnostic: Solid hands it a plain snapshot. |
+| `src/lib/ecg.ts` | The 12-lead trace, drawn on a canvas at true 25 mm/s and 10 mm/mV. |
+| `src/lib/palette.ts` | The colours, free of any Three.js import so the legend can share them. |
+| `src/lib/state.ts` | One store, so the model, the ECG and the panels cannot disagree. |
+| `src/components/ui/` | shadcn-style primitives on Kobalte. |
+| `src/content/reference.tsx` | The reference tables, converted from the original markup. |
+| `tools/build_heart_meshes.py` | Regenerates the scanned meshes from BodyParts3D. |
+
+The three test files split by what they can actually prove:
+
+- `test/heart-data.test.ts` — the clinical data, the ECG maths (including
+  Einthoven's law across every scenario, stage and instant), the dominance model,
+  the geometry, mesh topology, the anatomical invariants and the mesh manifest.
+- `test/scene.test.ts` — the render path against a stubbed Three.js, over every
+  occlusion, stage, dominance and layer. The stub throws on non-finite vertices
+  and malformed curves, so a geometry mistake fails here rather than silently
+  rendering nothing in a browser.
+- `test/app.test.tsx` — the Solid components in jsdom: landmarks, the WebGL
+  fallback, keyboard operation, and the wiring from the store to the panels.
 
 ## Geometry
 
-`heart-data.js` holds the clinical content and the shape maths with no Three.js and
-no DOM, so the medicine can be edited without touching the rendering. Sources and
+`src/lib/heart-data.ts` holds the medicine and the maths with nothing else in it,
+so the clinical content can be edited without touching the rendering. Sources and
 reasoning are in the comment blocks above each section.
 
-The scanned meshes in `models/` are regenerated with:
+The scanned meshes in `public/models/` are regenerated with:
 
-    python3 tools/build_heart_meshes.py
+    npm run meshes
 
 It reads only the element meshes it needs, over HTTP range requests, and fails
 loudly if the registration drifts — the interventricular grooves must land within
 10° of the model's own angles, and the chambers, valves and papillary muscles must
 hold their real spatial relationships.
 
+## Deployment
+
+Pushing to `main` runs `.github/workflows/deploy.yml`, which typechecks, runs the
+full suite and only then builds and publishes to GitHub Pages. A red test never
+reaches the site.
+
 ## Licence
 
-Meshes in `models/` derive from BodyParts3D and are CC BY-SA 2.1 Japan — see
-`models/LICENSE`. The rest of the code is MIT.
+Meshes in `public/models/` derive from BodyParts3D and are CC BY-SA 2.1 Japan —
+see `public/models/LICENSE`. The rest of the code is MIT.

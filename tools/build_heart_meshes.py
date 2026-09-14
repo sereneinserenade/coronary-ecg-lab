@@ -7,7 +7,7 @@ https://dbarchive.biosciencedbc.jp/en/bodyparts3d/
 
 Reads only the element meshes it needs, straight out of the remote zip via HTTP
 range requests, then registers them into the local cardiac frame used by
-heart-data.js (+x patient's left, +y towards the base, +z anterior, origin on the
+src/lib/heart-data.ts (+x patient's left, +y towards the base, +z anterior, origin on the
 left ventricular long axis) so the existing AHA segment maths applies unchanged.
 
     python3 tools/build_heart_meshes.py
@@ -20,7 +20,7 @@ ZIP = f"{BASE}/partof_BP3D_4.0_obj_99.zip"
 UA = {"User-Agent": "coronary-ecg-lab mesh build script"}
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE = os.path.join(ROOT, "tools", ".cache")
-OUT = os.path.join(ROOT, "models")
+OUT = os.path.join(ROOT, "public", "models")   # Vite copies public/ verbatim
 
 # Matches the procedural model so both can be compared in the same frame.
 LV_TOP, LV_BOT = 2.7, -6.0

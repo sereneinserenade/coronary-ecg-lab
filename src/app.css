@@ -1,0 +1,126 @@
+@import "tailwindcss";
+
+/* Dark mode is driven by an explicit attribute so the toggle can override the
+   system preference, with the system preference as the default. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* ------------------------------------------------------------------ *
+ * TOKENS
+ * Carried over from the pre-migration stylesheet so the visual language
+ * survives the rewrite: warm off-white canvas, deep teal accent, and the
+ * clinical red/blue pair reserved for ST elevation and depression.
+ * Expressed in oklch so hover and active states can be derived by moving
+ * lightness rather than hand-picking a second hex.
+ * ------------------------------------------------------------------ */
+@theme {
+  --color-canvas: oklch(98.5% 0.004 85);
+  --color-surface: oklch(100% 0 0);
+  --color-elevated: oklch(99.2% 0.003 85);
+  --color-ink: oklch(23% 0.012 165);
+  --color-muted: oklch(52% 0.016 165);
+  --color-line: oklch(91% 0.005 85);
+  --color-accent: oklch(45% 0.075 175);
+  --color-accent-hover: oklch(40% 0.078 175);
+  --color-accent-soft: oklch(95.5% 0.018 175);
+  --color-accent-ink: oklch(100% 0 0);
+  --color-elevation-up: oklch(52% 0.17 25);
+  --color-elevation-down: oklch(50% 0.15 255);
+  --color-warn: oklch(52% 0.17 25);
+  --color-warn-soft: oklch(96% 0.02 25);
+
+  --radius-card: 0.625rem;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --measure: 68ch;
+}
+
+[data-theme="dark"] {
+  --color-canvas: oklch(17% 0.008 165);
+  --color-surface: oklch(21% 0.009 165);
+  --color-elevated: oklch(24% 0.009 165);
+  --color-ink: oklch(93% 0.005 165);
+  --color-muted: oklch(70% 0.014 165);
+  --color-line: oklch(30% 0.01 165);
+  --color-accent: oklch(78% 0.10 175);
+  --color-accent-hover: oklch(84% 0.10 175);
+  --color-accent-soft: oklch(28% 0.035 175);
+  --color-accent-ink: oklch(17% 0.008 165);
+  --color-elevation-up: oklch(70% 0.16 25);
+  --color-elevation-down: oklch(72% 0.12 255);
+  --color-warn: oklch(72% 0.16 25);
+  --color-warn-soft: oklch(26% 0.04 25);
+}
+
+@layer base {
+  *, *::before, *::after { box-sizing: border-box; }
+
+  html {
+    scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 1rem;
+    line-height: 1.6;
+  }
+
+  /* A visible 2px ring on everything focusable, never removed without replacement. */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  h1, h2, h3 { text-wrap: balance; }
+  p, li { text-wrap: pretty; }
+
+  /* Anything whose value changes should not reflow as digits change width. */
+  table, .tabular { font-variant-numeric: tabular-nums; }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * MOTION
+ * Entry animations for the overlay primitives, and the accordion's height
+ * transition. Written by hand rather than pulled from tailwindcss-animate:
+ * it is four keyframes, and a dependency for four keyframes is not worth it.
+ * Durations follow the system — popovers 150ms, panels 200ms, exits faster.
+ * ------------------------------------------------------------------ */
+@keyframes enter {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes kb-collapse-down {
+  from { height: 0; }
+  to { height: var(--kb-collapsible-content-height); }
+}
+@keyframes kb-collapse-up {
+  from { height: var(--kb-collapsible-content-height); }
+  to { height: 0; }
+}
+
+@utility animate-in {
+  animation: enter var(--tw-duration, 150ms) var(--tw-ease, cubic-bezier(0, 0, 0.2, 1));
+}
+/* Kept as no-ops so the shadcn class vocabulary reads the same as upstream. */
+@utility fade-in-0 { --tw-enter-opacity: 0; }
+@utility zoom-in-95 { --tw-enter-scale: 0.95; }
+
+@utility animate-kb-collapse-up {
+  animation: kb-collapse-up 180ms cubic-bezier(0.4, 0, 1, 1);
+}
+@utility animate-kb-collapse-down {
+  animation: kb-collapse-down 220ms cubic-bezier(0, 0, 0.2, 1);
+}
