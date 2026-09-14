@@ -69,12 +69,22 @@
           <select id="scenario"></select>
         </div>
 
+        <!-- Which artery reaches the crux. It moves the inferior wall between systems,
+             so it changes the answer more than any other normal variation. -->
+        <div class="field">
+          <label for="dominance">Coronary dominance</label>
+          <select id="dominance"></select>
+        </div>
+
         <div id="panel-lesion" class="lesion"></div>
 
         <div class="layers" role="group" aria-label="Layers">
           <label><input type="checkbox" id="opt-arteries" checked> Arteries</label>
           <label><input type="checkbox" id="opt-veins"> Veins</label>
           <label><input type="checkbox" id="opt-chambers" checked> RV &amp; atria</label>
+          <label><input type="checkbox" id="opt-conduction"> Conduction system</label>
+          <label><input type="checkbox" id="opt-internals"> Valves &amp; papillary muscles</label>
+          <label><input type="checkbox" id="opt-variants"> Variant branches</label>
         </div>
 
         <details class="disclosure" open>
@@ -97,6 +107,16 @@
             </div>
 
             <div class="field">
+              <label for="patient">ST threshold for</label>
+              <select id="patient">
+                <option value="man&gt;=40">Man, 40 or over</option>
+                <option value="man&lt;40">Man, under 40</option>
+                <option value="woman">Woman, any age</option>
+              </select>
+              <p class="hint">The diagnostic bar in V2&ndash;V3 differs by age and sex: 2&nbsp;mm, 2.5&nbsp;mm and 1.5&nbsp;mm respectively.</p>
+            </div>
+
+            <div class="field">
               <div class="layers">
                 <label><input type="checkbox" id="opt-spin" checked> Rotate</label>
                 <label><input type="checkbox" id="opt-scan" checked> Scanned anatomy</label>
@@ -113,6 +133,8 @@
                 <li><i class="swatch" style="background:#a8443f"></i> Viable</li>
                 <li><i class="swatch" style="background:#8e5a52"></i> RV</li>
                 <li><i class="swatch" style="background:#d3b264"></i> Infarct</li>
+                <li><i class="swatch" style="background:#e8c85a"></i> Conduction</li>
+                <li><i class="swatch" style="background:#d8cfc0"></i> Valve</li>
               </ul>
             </div>
           </div>
@@ -135,6 +157,7 @@
     <section class="findings" aria-label="Findings">
       <div id="panel-ecg"></div>
       <div id="panel-distinguish"></div>
+      <div id="panel-conduction"></div>
       <div id="panel-gross"></div>
     </section>
 
@@ -220,6 +243,48 @@
         </div>
       </details>
       <details class="ref-block">
+        <summary>Why the reciprocal change is not a separate finding</summary>
+        <div class="ref-body">
+<p>Ischaemic myocardium is electrically positive relative to healthy muscle during the ST segment, so the whole injury behaves as a single current-of-injury dipole pointing away from the infarct. There are only two degrees of freedom in the frontal plane, and every limb lead is one projection of that same arrow.</p>
+      <p>That is why this model does not carry a hand-written list of which leads go up and which go down. Each occlusion gets an <strong>injury axis</strong> in degrees on the hexaxial system, and each lead reads <code>amplitude &times; cos(lead axis &minus; injury axis)</code>. The elevation, the depression and their relative depths all fall out of one number.</p>
+      <div class="table-wrap"><table>
+        <caption>Where each occlusion points the arrow, and what that forces the leads to show.</caption>
+        <thead><tr><th>Occlusion</th><th>Injury axis</th><th>Falls out of it</th></tr></thead>
+        <tbody>
+          <tr><td>Proximal RCA</td><td><code>+115&deg;</code></td><td>Past 90&deg;, so III exceeds II; aVL at &minus;30&deg; is nearly opposite, so it is the deepest reciprocal.</td></tr>
+          <tr><td>Circumflex, inferior</td><td><code>+80&deg;</code></td><td>Short of 90&deg;, so II equals or exceeds III, and I stays positive. That single difference is the RCA-versus-circumflex rule.</td></tr>
+          <tr><td>Proximal LAD</td><td><code>&minus;52&deg;</code></td><td>Elevation in I and aVL; III almost directly opposite, so it is the deepest reciprocal, then aVF, then II.</td></tr>
+          <tr><td>First diagonal</td><td><code>&minus;35&deg;</code></td><td>I and aVL up, III down. Add V2 and you have the South African flag.</td></tr>
+          <tr><td>Wrap-around LAD</td><td><code>+75&deg;</code></td><td>Anterior and inferior elevation together, and no limb lead far enough round to be reciprocal.</td></tr>
+          <tr><td>Left main</td><td><code>&minus;135&deg;</code></td><td>Straight at aVR, away from everything else: aVR up, eight leads down.</td></tr>
+          <tr><td>Posterior</td><td>almost none</td><td>The arrow points backwards, out of the frontal plane. Nothing shows until you record V7&ndash;V9.</td></tr>
+        </tbody>
+      </table></div>
+      <p>The horizontal plane cannot be derived from the frontal one, so V1&ndash;V6 are given directly. But the four dependent frontal leads never are: <code>III = II &minus; I</code>, <code>aVR = &minus;(I+II)/2</code>, <code>aVL = I &minus; II/2</code>, <code>aVF = II &minus; I/2</code>, at every instant of every beat. A test checks all four to within 10<sup>&minus;9</sup>&nbsp;mV across every occlusion and every stage, so nothing the page draws could fail to come off a real patient.</p>
+      <p>The numbers beside each trace are the ST shift in millimetres at the J point. Bold means that lead clears its diagnostic threshold under the Fourth Universal Definition &mdash; 1&nbsp;mm in most leads, 2&nbsp;mm in V2&ndash;V3 for a man of 40 or over (2.5&nbsp;mm under 40, 1.5&nbsp;mm for a woman), and 0.5&nbsp;mm in V4R and V7&ndash;V9. Change the patient in the view options and watch which leads cross.</p>
+        </div>
+      </details>
+      <details class="ref-block">
+        <summary>The conduction system, and why its blood supply is the point</summary>
+        <div class="ref-body">
+<p>Turn on the conduction layer. The parts grey out one by one as you change the occlusion, and they do not follow the wall that is infarcting &mdash; they follow their own arteries.</p>
+      <div class="table-wrap"><table>
+        <caption>Each part fails only when it loses every artery that feeds it.</caption>
+        <thead><tr><th>Part</th><th>Supply</th><th>Fails when</th><th>What you see</th></tr></thead>
+        <tbody>
+          <tr><td>Sinoatrial node</td><td>Sinus node artery &mdash; RCA ~60%, LCx ~40%</td><td>Single supply</td><td>Sinus bradycardia, arrest, or junctional escape.</td></tr>
+          <tr><td>AV node</td><td>AV nodal branch of whichever artery reaches the crux &mdash; RCA ~90%</td><td>Single supply</td><td>Wenckebach or complete block, but <strong>narrow</strong>, atropine-responsive and temporary.</td></tr>
+          <tr><td>Bundle of His</td><td>AV nodal artery <em>and</em> the first septal perforator</td><td>Both gone</td><td>Wide-complex infranodal block. Atropine will not touch it.</td></tr>
+          <tr><td>Right bundle branch</td><td>Septal perforators only</td><td>Single supply</td><td>RSR&prime; in V1, wide slurred S in I and V6.</td></tr>
+          <tr><td>Left anterior fascicle</td><td>First septal perforator only</td><td>Single supply</td><td>Left axis deviation past &minus;45&deg;, qR in aVL.</td></tr>
+          <tr><td>Left posterior fascicle</td><td>Septal perforators <em>and</em> the PDA</td><td>Both gone</td><td>Right axis deviation. Rare alone &mdash; it is broad and dual-fed.</td></tr>
+        </tbody>
+      </table></div>
+      <p>Two consequences worth carrying out of the table. A <strong>proximal LAD</strong> occlusion takes the first septal perforator, and the right bundle and the left anterior fascicle are the two structures that depend on it alone &mdash; so they fail together, and new bifascicular block localises the lesion above the first septal. An <strong>inferior</strong> infarct takes the AV nodal branch, which sits above the bundle of His, so the block it causes is narrow, responds to atropine, and recovers. Same symptom, opposite prognosis, and the difference is anatomical.</p>
+      <p>The same logic runs the papillary muscles. The anterolateral one is fed by the first diagonal <em>and</em> the first obtuse marginal; the posteromedial one hangs off the posterior descending alone. That is the whole reason posteromedial rupture after an inferior MI is six to twelve times commoner, and why it lands three to seven days out, when the muscle is at its softest.</p>
+        </div>
+      </details>
+      <details class="ref-block">
         <summary>Patterns that are occlusions in disguise</summary>
         <div class="ref-body">
 <ul>
@@ -280,8 +345,11 @@
         <li><strong>Borders and surfaces.</strong> Checked automatically on every build: the right border is the right atrium, the left border the left ventricle, the base the left atrium, the apex the left ventricle, and the sternocostal surface the right ventricle.</li>
         <li><strong>Appendages.</strong> The right atrial appendage is a broad scalloped flap lying over the aortic root; the left is a narrower flattened finger beside the pulmonary trunk.</li>
         <li><strong>Outflow and great arteries.</strong> The infundibulum sweeps up, left and anterior, crossing in front of the aortic root; the pulmonary trunk then runs posteriorly across the aorta. The two great arteries spiral around each other &mdash; the relationship that transposition reverses.</li>
+      <li><strong>Valves and papillary muscles are scanned, not sculpted.</strong> BodyParts3D decomposes each chamber into a blood-pool cavity, a wall region, the valve leaflets hinged on it and the papillary muscles. Because the leaflets are shared between the chamber above and the chamber below, collecting every element of &ldquo;left atrium&rdquo; silently welds the mitral valve onto it &mdash; and earlier builds were painting AHA segment colours onto mitral leaflets. The build script now names each element, so the four valves and the papillary muscles come through as real scanned surfaces in their own right.</li>
+      <li><strong>The atria are trimmed to the chamber.</strong> The cavae and the pulmonary veins are modelled as part of the atrial wall. Left attached they make each atrium about 9&nbsp;cm across and drive it straight down through the ventricles; clipped to a sphere anchored above each atrium&rsquo;s own AV valve they come out at 4&ndash;5&nbsp;cm, which is atrium-sized.</li>
+      <li><strong>The conduction system is drawn where its blood supply is, not where the muscle is.</strong> Sinus node at the cavoatrial junction, AV node in the triangle of Koch, the His bundle through the membranous septum, then the right bundle and the two left fascicles. Each one greys out only when <em>all</em> of its arteries are occluded, which is why a proximal LAD lesion fells the right bundle and the left anterior fascicle together while the dual-supplied posterior fascicle and His bundle survive.</li>
       </ul>
-      <p class="hint"><strong>Known limitations.</strong> The right ventricle now forms the most anterior point of the heart, but it still covers only about 37% of the frontal area, against roughly half to two thirds in life &mdash; a crescent grown off a surface of revolution can only go so far. The model's anteroposterior depth of 9.2&nbsp;cm also runs deeper than Gray's classic 6&nbsp;cm figure. <strong>Also left out:</strong> valves and their apparatus, trabeculae carneae and the moderator band, papillary muscles as discrete structures, the pericardium, and any patient-specific variation. Coronary courses are schematic &mdash; real ones wander, and dominance alone redraws the inferior territory.</p>
+      <p class="hint"><strong>Known limitations.</strong> The right ventricle now forms the most anterior point of the heart, but the procedural crescent still covers only about 37% of the frontal area, against roughly half to two thirds in life. The scanned frame is pinned to the extreme basal vertex of the left ventricle rather than to the mitral annulus, so the scanned parts sit two to three centimetres lower against the model&rsquo;s own base than they should; the relationships between them are right, the absolute height is not. In this one cadaveric dataset the tricuspid annulus also reads a few millimetres <em>basal</em> to the mitral rather than apical to it &mdash; the procedural model has the offset the right way round. <strong>Also left out:</strong> chordae tendineae, trabeculae carneae and the moderator band, the pericardium, and any patient-specific variation beyond dominance and the ramus intermedius. Coronary courses are schematic &mdash; real ones wander.</p>
         </div>
       </details>
       <details class="ref-block">
@@ -293,9 +361,8 @@
         <li><strong>Left dominant (~8%)</strong> — PDA from the circumflex. An inferior MI here is a circumflex lesion, and because one vessel supplies both the lateral and inferior walls, the infarct is larger and the prognosis worse.</li>
         <li><strong>Co-dominant (~7%)</strong> — PDA from the RCA, posterolateral branches from the circumflex.</li>
       </ul>
-      <p>Two supply facts worth carrying: the <strong>posteromedial papillary muscle</strong> has a single blood supply from the PDA, which is why it ruptures after an inferior MI while the dual-supplied anterolateral one rarely does. And the <strong>AV node</strong> comes off the RCA in about 85% of people, which is why heart block accompanies inferior rather than anterior infarcts — and why that block is usually narrow, atropine-responsive and temporary.</p>
-      </details>
-    </section>
+      <p>Two supply facts worth carrying: the <strong>posteromedial papillary muscle</strong> has a single blood supply from the PDA, which is why it ruptures after an inferior MI while the dual-supplied anterolateral one rarely does. And the <strong>AV node</strong> comes off the RCA in about 85–90% of people, which is why heart block accompanies inferior rather than anterior infarcts — and why that block is usually narrow, atropine-responsive and temporary.</p>
+      <p>Switch the <strong>dominance</strong> control beside the model and the whole tree rebuilds: the artery that reaches the crux changes, the posterior descending changes parent, and the inferior segments move from one territory to the other. In a left-dominant heart an RCA occlusion leaves the left ventricle almost untouched, and a circumflex occlusion takes the lateral <em>and</em> the inferior wall at once.</p>
         </div>
       </details>
     </section>

@@ -1,8 +1,10 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {
-  SEG_NAME, STAGES, SCENARIOS, RR, MM_PER_S, MM_PER_MV,
-  beat, ahaSegment, leadState,
+  SEG_NAME, STAGES, SCENARIOS, MM_PER_S, MM_PER_MV, rrFor,
+  beat, ahaSegment, leadState, stDeviation, stThreshold, ALL_LEADS,
+  DOMINANCE, withDominance, VESSEL_INFO,
+  PAPILLARY, papillaryAxisPoints, CONDUCTION, conductionState, conductionSummary, VALVES,
   ANT_GROOVE, POST_GROOVE, RV_T0, RV_TIP, APEX_DIR, heartBasis, LA_POS, RA_POS, LAA, RAA,
   LV_TOP, LV_LEN,
   lvRadius, lvWall, lvSurfY, shellMesh,
@@ -15,15 +17,26 @@ import {
  * ------------------------------------------------------------------ */
 
 const state = {
-  scenario: SCENARIOS[0],
+  base: SCENARIOS[0],
+  dominance: 'right',
   stage: 2,
   showArteries: true,
   showVeins: false,
   showChambers: true,
+  showConduction: false,
+  showInternals: false,     // papillary muscles and valves
+  showVariants: false,      // branches present in only some hearts
   wallOpacity: 0.7,
   spin: true,
   geometry: 'scanned',      // or 'procedural'
+  patient: 'man>=40',       // sets the V2/V3 ST threshold
 };
+
+// The scenario as it plays out in THIS heart. Dominance moves the crux territory,
+// so everything downstream reads this rather than the right-dominant base case.
+Object.defineProperty(state, 'scenario', {
+  get() { return withDominance(state.base, state.dominance); },
+});
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -31,8 +44,6 @@ const $ = (sel) => document.querySelector(sel);
  * 3. ECG
  * ------------------------------------------------------------------ */
 
-
-// One beat, in mV, for a lead whose morphology has already been modified.
 
 const ECG_ROWS = [
   ['I', 'aVR', 'V1', 'V4'],
@@ -46,7 +57,15 @@ function drawECG() {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const cssW = canvas.clientWidth;
   if (!cssW) return;                    // laid out at zero width (hidden tab); nothing to draw
-  const cssH = Math.round(cssW * 0.46);
+  const sc = state.scenario;
+  const stage = STAGES[state.stage];
+  const hr = stage.id === 0 ? 75 : sc.hr;
+  const rr = rrFor(hr);
+  // A fifth row appears only when the scenario is one you would actually reach
+  // for extra electrodes on: V4R for the right ventricle, V7-V9 for the back.
+  const extras = stage.id !== 0 ? sc.extras : [];
+  const rows = 4 + (extras.length ? 1 : 0);
+  const cssH = Math.round(cssW * (extras.length ? 0.58 : 0.46));
   canvas.width = cssW * dpr;
   canvas.height = cssH * dpr;
   canvas.style.height = cssH + 'px';
@@ -63,11 +82,10 @@ function drawECG() {
   c.fillStyle = paper;
   c.fillRect(0, 0, cssW, cssH);
 
-  // 1 large box = 0.2 s = 5 mm. Scale so 4 beats-worth of strip fits the width.
-  const rows = 4; // 3 lead rows + rhythm strip
+  // 1 large box = 0.2 s = 5 mm. Scale so roughly four beats fit each column.
   const pad = 6;
   const rowH = (cssH - pad * 2) / rows;
-  const pxPerMm = Math.min(rowH / 13, (cssW - pad * 2) / (4 * MM_PER_S * RR + 4));
+  const pxPerMm = Math.min(rowH / 13, (cssW - pad * 2) / (4 * MM_PER_S * 0.8 + 4));
   const pxPerS = pxPerMm * MM_PER_S;
   const pxPerMv = pxPerMm * MM_PER_MV;
 
@@ -85,7 +103,7 @@ function drawECG() {
 
   const colW = (cssW - pad * 2) / 4;
   const trace = (lead, x0, width, baseY) => {
-    const { m, offset } = leadState(lead, state.scenario, STAGES[state.stage]);
+    const { m, offset } = leadState(lead, sc, stage);
     c.strokeStyle = ink;
     c.lineWidth = 1.6;
     c.lineJoin = 'round';
@@ -94,7 +112,7 @@ function drawECG() {
     for (let i = 0; i <= steps; i++) {
       const x = x0 + (i / steps) * width;
       const tAbs = (i / steps) * (width / pxPerS);
-      const tIn = tAbs % RR;
+      const tIn = tAbs % rr;
       const y = baseY - beat(tIn, m, offset) * pxPerMv;
       i === 0 ? c.moveTo(x, y) : c.lineTo(x, y);
     }
@@ -104,11 +122,17 @@ function drawECG() {
     c.font = `600 ${Math.max(9, pxPerMm * 2.6)}px ui-sans-serif, system-ui, sans-serif`;
     c.fillText(lead, x0 + 3, baseY - rowH * 0.36);
 
-    // Flag the abnormal leads.
-    const sc = state.scenario;
-    if (STAGES[state.stage].id !== 0) {
-      if (sc.elevate.includes(lead)) { c.fillStyle = '#d13b2e'; c.fillText('↑ST', x0 + width - pxPerMm * 9, baseY - rowH * 0.36); }
-      else if (sc.depress.includes(lead)) { c.fillStyle = '#2f6fd0'; c.fillText('↓ST', x0 + width - pxPerMm * 9, baseY - rowH * 0.36); }
+    // Flag the abnormal leads, and say by how much — reading ST shift in millimetres
+    // off the paper is the skill this is meant to teach.
+    if (stage.id !== 0) {
+      const mm = stDeviation(lead, sc, stage) * MM_PER_MV;
+      if (Math.abs(mm) >= 0.4) {
+        const sig = Math.abs(mm) >= stThreshold(lead, state.patient) * MM_PER_MV;
+        c.fillStyle = mm > 0 ? '#d13b2e' : '#2f6fd0';
+        c.font = `${sig ? 700 : 400} ${Math.max(8, pxPerMm * 2.3)}px ui-sans-serif, system-ui, sans-serif`;
+        const label = `${mm > 0 ? '↑' : '↓'}${Math.abs(mm).toFixed(1)}${sig ? '*' : ''}`;
+        c.fillText(label, x0 + width - pxPerMm * 10, baseY - rowH * 0.36);
+      }
     }
   };
 
@@ -119,10 +143,16 @@ function drawECG() {
   // Rhythm strip, lead II, full width.
   trace('II', pad, cssW - pad * 2 - 4, pad + rowH * 3.62);
 
+  if (extras.length) {
+    const w = (cssW - pad * 2) / extras.length;
+    extras.forEach((lead, col) => trace(lead, pad + col * w, w - 4, pad + rowH * 4.62));
+  }
+
   c.fillStyle = ink;
   c.globalAlpha = 0.55;
   c.font = `${Math.max(8, pxPerMm * 2.2)}px ui-sans-serif, system-ui, sans-serif`;
-  c.fillText('25 mm/s   10 mm/mV   HR 75', pad + 2, cssH - 4);
+  c.fillText(`25 mm/s   10 mm/mV   HR ${hr}   ↑↓ = ST shift in mm, * clears the diagnostic threshold`,
+    pad + 2, cssH - 4);
   c.globalAlpha = 1;
 }
 
@@ -388,66 +418,174 @@ function clearVessels() {
 
 function buildVessels() {
   clearVessels();
-  const A = (id, pts, r) => {
-    const mat = new THREE.MeshStandardMaterial({ color: '#cf3b2f', roughness: 0.45, metalness: 0.05 });
-    const mesh = tube(pts, r, r, mat, 8);
+  // Coronaries taper. A vessel that keeps its calibre from ostium to apex reads as
+  // plumbing; the narrowing is what makes the distal tree look like a tree.
+  const make = (kind, colour) => (id, pts, r0, r1 = r0 * 0.66) => {
+    const mat = new THREE.MeshStandardMaterial({ color: colour, roughness: kind === 'artery' ? 0.45 : 0.5, metalness: 0.05 });
+    const mesh = tube(pts, r0, r1, mat, 8);
+    mesh.userData.vesselId = id;
     group.add(mesh);
-    vessels.set(id, { mesh, kind: 'artery', material: mat, base: mat.color.clone() });
+    vessels.set(id, { mesh, kind, material: mat, base: mat.color.clone() });
   };
-  const V = (id, pts, r) => {
-    const mat = new THREE.MeshStandardMaterial({ color: '#3f6fb8', roughness: 0.5, metalness: 0.05 });
-    const mesh = tube(pts, r, r, mat, 8);
-    group.add(mesh);
-    vessels.set(id, { mesh, kind: 'vein', material: mat, base: mat.color.clone() });
-  };
+  const A = make('artery', '#cf3b2f');
+  const V = make('vein', '#3f6fb8');
 
+  const dom = DOMINANCE[state.dominance] || DOMINANCE.right;
   const leftSinus = V3(-0.15, 3.35, 0.6);
   const rightSinus = V3(-1.25, 3.3, -0.1);
   const G = ANT_GROOVE;      // 122
   const P = POST_GROOVE;     // 232
+  // Whichever artery reaches the crux is the dominant one. The other stops short.
+  const rcaEnd = dom.pdaFrom === 'RCA' ? P : 250;
+  const lcxEnd = dom.pdaFrom === 'LCX' ? P : (dom.plvFrom === 'LCX' ? 254 : 276);
 
   // --- Left system: LM bifurcates into the LAD (anterior IV groove) and the LCx
   //     (left AV groove, sweeping the LV free wall towards the crux).
-  A('LM', [leftSinus, surf(G + 12, 0.03, 0.22), surf(G + 4, 0.055, 0.2)], 0.13);
-  A('LAD1', [surf(G + 4, 0.055, 0.2), surf(G, 0.16, 0.18), surf(G - 2, 0.28, 0.17)], 0.10);
-  A('LAD2', [surf(G - 2, 0.28, 0.17), surf(G - 4, 0.42, 0.16), surf(G - 6, 0.58, 0.15)], 0.085);
+  A('LM', [leftSinus, surf(G + 12, 0.03, 0.22), surf(G + 4, 0.055, 0.2)], 0.13, 0.12);
+  A('LAD1', [surf(G + 4, 0.055, 0.2), surf(G, 0.16, 0.18), surf(G - 2, 0.28, 0.17)], 0.10, 0.092);
+  A('LAD2', [surf(G - 2, 0.28, 0.17), surf(G - 4, 0.42, 0.16), surf(G - 6, 0.58, 0.15)], 0.088, 0.074);
   A('LAD3', [surf(G - 6, 0.58, 0.15), surf(G - 8, 0.74, 0.14), surf(G - 12, 0.88, 0.13),
-             surf(170, 0.965, 0.12), surf(P - 20, 0.93, 0.12), surf(P - 16, 0.82, 0.13)], 0.07);
-  A('D1', [surf(G - 2, 0.28, 0.17), surf(95, 0.34, 0.19), surf(68, 0.43, 0.19), surf(50, 0.53, 0.18)], 0.075);
-  A('D2', [surf(G - 5, 0.50, 0.16), surf(96, 0.58, 0.17), surf(78, 0.68, 0.16)], 0.06);
-  A('S1', [surf(G + 2, 0.20, 0.14), V3(-1.35, lvSurfY(160, 0.24), 0.5)], 0.05);
-  A('S2', [surf(G - 3, 0.40, 0.13), V3(-1.0, lvSurfY(160, 0.44), 0.35)], 0.045);
-  A('S3', [surf(G - 6, 0.62, 0.12), V3(-0.6, lvSurfY(160, 0.66), 0.2)], 0.04);
-  A('LCX1', [surf(G + 10, 0.045, 0.22), surf(100, 0.04, 0.22), surf(62, 0.045, 0.22), surf(24, 0.06, 0.22)], 0.10);
-  A('LCX2', [surf(24, 0.06, 0.22), surf(345, 0.07, 0.22), surf(310, 0.075, 0.22), surf(276, 0.08, 0.22)], 0.085);
-  A('OM1', [surf(24, 0.06, 0.20), surf(8, 0.28, 0.19), surf(356, 0.46, 0.18), surf(350, 0.58, 0.17)], 0.07);
-  A('OM2', [surf(330, 0.07, 0.20), surf(322, 0.30, 0.19), surf(318, 0.46, 0.18)], 0.06);
+             surf(170, 0.965, 0.12), surf(P - 20, 0.93, 0.12), surf(P - 16, 0.82, 0.13)], 0.07, 0.038);
+  A('D1', [surf(G - 2, 0.28, 0.17), surf(95, 0.34, 0.19), surf(68, 0.43, 0.19), surf(50, 0.53, 0.18)], 0.078, 0.042);
+  A('D2', [surf(G - 5, 0.50, 0.16), surf(96, 0.58, 0.17), surf(78, 0.68, 0.16)], 0.062, 0.034);
+  // Septal perforators dive straight into the septum off the back of the LAD.
+  A('S1', [surf(G + 2, 0.20, 0.14), V3(-1.35, lvSurfY(160, 0.24), 0.5)], 0.052, 0.03);
+  A('S2', [surf(G - 3, 0.40, 0.13), V3(-1.0, lvSurfY(160, 0.44), 0.35)], 0.046, 0.026);
+  A('S3', [surf(G - 6, 0.62, 0.12), V3(-0.6, lvSurfY(160, 0.66), 0.2)], 0.04, 0.022);
+  // Ramus intermedius: a third trunk straight off the left main, in 15-30% of hearts.
+  A('RI', [surf(G + 8, 0.05, 0.21), surf(86, 0.22, 0.20), surf(64, 0.38, 0.19), surf(52, 0.50, 0.18)], 0.072, 0.036);
+  A('LCX1', [surf(G + 10, 0.045, 0.22), surf(100, 0.04, 0.22), surf(62, 0.045, 0.22), surf(24, 0.06, 0.22)], 0.10, 0.092);
+  A('LCX2', [surf(24, 0.06, 0.22), surf(345, 0.07, 0.22), surf(310, 0.075, 0.22),
+             surf(Math.min(288, (310 + lcxEnd) / 2), 0.08, 0.22), surf(lcxEnd, 0.10, 0.2)],
+     0.086, dom.pdaFrom === 'LCX' ? 0.07 : 0.05);
+  A('OM1', [surf(24, 0.06, 0.20), surf(8, 0.28, 0.19), surf(356, 0.46, 0.18), surf(350, 0.58, 0.17)], 0.072, 0.04);
+  A('OM2', [surf(330, 0.07, 0.20), surf(322, 0.30, 0.19), surf(318, 0.46, 0.18)], 0.062, 0.034);
 
   // --- Right system: the RCA rides the right AV groove over the RV convexity to
   //     the crux, then gives the PDA down the posterior IV groove.
-  A('RCA1', [rightSinus, rvSurf(142, 0.09, 0.16), rvSurf(165, 0.10, 0.18)], 0.115);
-  A('RCA2', [rvSurf(165, 0.10, 0.18), rvSurf(190, 0.105, 0.18), rvSurf(212, 0.115, 0.17)], 0.10);
-  A('RCA3', [rvSurf(212, 0.115, 0.17), rvSurf(224, 0.125, 0.16), surf(P, 0.13, 0.16)], 0.09);
-  A('AM', [rvSurf(200, 0.11, 0.16), rvSurf(205, 0.28, 0.15), rvSurf(208, 0.5, 0.14), rvSurf(210, 0.7, 0.13)], 0.065);
+  A('RCA1', [rightSinus, rvSurf(142, 0.09, 0.16), rvSurf(165, 0.10, 0.18)], 0.115, 0.106);
+  A('RCA2', [rvSurf(165, 0.10, 0.18), rvSurf(190, 0.105, 0.18), rvSurf(212, 0.115, 0.17)], 0.10, 0.094);
+  A('RCA3', [rvSurf(212, 0.115, 0.17), rvSurf(224, 0.125, 0.16), surf(rcaEnd, 0.13, 0.16)],
+     0.09, dom.pdaFrom === 'RCA' ? 0.082 : 0.05);
+  // Conus branch: the first thing off the RCA, over the outflow tract. It is the
+  // collateral that can keep an occluded LAD alive (the circle of Vieussens).
+  A('CB', [rightSinus, rvSurf(150, 0.055, 0.2), V3(-3.1, 3.85, 1.5), V3(-1.9, 4.1, 2.0)], 0.055, 0.03);
+  A('RV1', [rvSurf(178, 0.10, 0.16), rvSurf(180, 0.26, 0.15), rvSurf(182, 0.42, 0.14)], 0.05, 0.028);
+  A('AM', [rvSurf(200, 0.11, 0.16), rvSurf(205, 0.28, 0.15), rvSurf(208, 0.5, 0.14), rvSurf(210, 0.7, 0.13)], 0.068, 0.036);
+  A('RV2', [rvSurf(218, 0.12, 0.16), rvSurf(220, 0.3, 0.15), rvSurf(222, 0.46, 0.14)], 0.046, 0.026);
   A('PDA', [surf(P, 0.13, 0.15), surf(P - 4, 0.32, 0.14), surf(P - 8, 0.54, 0.13),
-            surf(P - 12, 0.76, 0.12), surf(P - 18, 0.88, 0.12)], 0.075);
-  A('PLV', [surf(P, 0.13, 0.15), surf(262, 0.24, 0.15), surf(276, 0.38, 0.14)], 0.06);
-  A('SAN', [rvSurf(150, 0.095, 0.16), V3(-3.0, 4.6, 0.5), V3(-2.6, 5.4, 0.35)], 0.05);
-  A('AVN', [surf(P + 2, 0.13, 0.14), V3(-0.55, lvSurfY(200, 0.16), -0.7)], 0.045);
+            surf(P - 12, 0.76, 0.12), surf(P - 18, 0.88, 0.12)], 0.078, 0.04);
+  // Posterior septals climb the back third of the septum to meet the anterior ones.
+  A('PS1', [surf(P - 3, 0.28, 0.12), V3(-0.95, lvSurfY(205, 0.32), -0.55)], 0.042, 0.024);
+  A('PS2', [surf(P - 9, 0.58, 0.11), V3(-0.55, lvSurfY(205, 0.62), -0.3)], 0.036, 0.02);
+  A('PLV', [surf(P, 0.13, 0.15), surf(262, 0.24, 0.15), surf(276, 0.38, 0.14)], 0.062, 0.034);
+  A('SAN', [rvSurf(150, 0.095, 0.16), V3(-3.0, 4.6, 0.5), V3(-3.25, 5.4, 0.55)], 0.052, 0.03);
+  A('AVN', [surf(P + 2, 0.13, 0.14), V3(-0.62, 3.00, -0.78)], 0.046, 0.026);
 
   // --- Venous system: every large vein accompanies an artery, and all but the
   //     anterior cardiac veins drain to the coronary sinus.
   V('CS', [surf(300, 0.075, 0.26), surf(276, 0.08, 0.28), surf(252, 0.09, 0.3),
-           surf(P, 0.12, 0.32), V3(-2.1, 3.9, -1.3)], 0.125);
+           surf(P, 0.12, 0.32), V3(-2.1, 3.9, -1.3)], 0.12, 0.13);
   V('GCV', [surf(G + 6, 0.86, 0.13), surf(G + 8, 0.6, 0.15), surf(G + 10, 0.34, 0.18),
             surf(G + 14, 0.1, 0.22), surf(104, 0.07, 0.24), surf(66, 0.07, 0.25),
-            surf(28, 0.09, 0.26), surf(348, 0.09, 0.26), surf(316, 0.085, 0.26), surf(300, 0.075, 0.26)], 0.085);
+            surf(28, 0.09, 0.26), surf(348, 0.09, 0.26), surf(316, 0.085, 0.26), surf(300, 0.075, 0.26)], 0.062, 0.1);
   V('MCV', [surf(P - 14, 0.86, 0.12), surf(P - 10, 0.6, 0.14), surf(P - 6, 0.36, 0.17),
-            surf(P - 2, 0.17, 0.24), surf(P, 0.125, 0.3), surf(252, 0.09, 0.3)], 0.08);
+            surf(P - 2, 0.17, 0.24), surf(P, 0.125, 0.3), surf(252, 0.09, 0.3)], 0.055, 0.09);
   V('SCV', [rvSurf(196, 0.52, 0.13), rvSurf(200, 0.3, 0.15), rvSurf(210, 0.12, 0.2),
-            rvSurf(224, 0.115, 0.22), surf(P, 0.12, 0.32)], 0.06);
-  V('PVLV', [surf(288, 0.5, 0.16), surf(290, 0.32, 0.2), surf(292, 0.15, 0.24), surf(288, 0.08, 0.26)], 0.055);
-  V('ACV', [rvSurf(170, 0.42, 0.14), rvSurf(168, 0.2, 0.16), V3(-2.9, 4.0, 0.6)], 0.05);
+            rvSurf(224, 0.115, 0.22), surf(P, 0.12, 0.32)], 0.042, 0.07);
+  V('PVLV', [surf(288, 0.5, 0.16), surf(290, 0.32, 0.2), surf(292, 0.15, 0.24), surf(288, 0.08, 0.26)], 0.04, 0.062);
+  V('ACV', [rvSurf(170, 0.42, 0.14), rvSurf(168, 0.2, 0.16), V3(-2.9, 4.0, 0.6)], 0.036, 0.055);
+
+  buildPapillary();
+  buildConduction();
+}
+
+/* --- papillary muscles, conduction system and valves ------------------ *
+ * All three are built in the same pass as the coronaries because all three are
+ * coloured by which coronary is occluded, not by which wall is infarcted. */
+
+const papillary = new Map();
+const conduction = new Map();
+let valveGroup = null;
+
+function clearMap(m) {
+  for (const v of m.values()) {
+    group.remove(v.mesh);
+    v.mesh.geometry.dispose();
+    v.mesh.material.dispose();
+  }
+  m.clear();
+}
+
+function buildPapillary() {
+  clearMap(papillary);
+  for (const pm of PAPILLARY) {
+    const [base, tip] = papillaryAxisPoints(pm);
+    const mid = [0, 1, 2].map((i) => base[i] + (tip[i] - base[i]) * 0.5);
+    const mat = new THREE.MeshStandardMaterial({ color: '#8f3b37', roughness: 0.8 });
+    const mesh = tube([V3(...base), V3(...mid), V3(...tip)], pm.r0, pm.r1, mat, 12);
+    mesh.userData.papId = pm.id;
+    group.add(mesh);
+    papillary.set(pm.id, { mesh, spec: pm, material: mat });
+  }
+}
+
+const NODE_COLOUR = '#e8c85a';        // the conduction tissue, pale against the muscle
+
+function buildConduction() {
+  clearMap(conduction);
+  for (const part of CONDUCTION) {
+    const mat = new THREE.MeshStandardMaterial({
+      color: NODE_COLOUR, roughness: 0.4, emissive: '#5a4708', emissiveIntensity: 0.35,
+    });
+    let mesh;
+    if (part.kind === 'node') {
+      mesh = new THREE.Mesh(new THREE.SphereGeometry(part.r, 18, 14), mat);
+      mesh.position.set(...part.at);
+    } else {
+      mesh = tube(part.path.map((p) => V3(...p)), part.r, part.r * 0.8, mat, 8);
+    }
+    mesh.userData.condId = part.id;
+    group.add(mesh);
+    conduction.set(part.id, { mesh, spec: part, material: mat });
+  }
+}
+
+/* The four annuli, drawn as rings with leaflets hanging from them. They fix the
+ * planes the AV-groove arteries run in, and they are what a bare shell most
+ * obviously lacks once you make the wall transparent. */
+function buildValves() {
+  valveGroup = new THREE.Group();
+  const ringMat = new THREE.MeshStandardMaterial({ color: '#d8cfc0', roughness: 0.55, metalness: 0.05 });
+  const leafMat = new THREE.MeshStandardMaterial({
+    color: '#e3d7c6', roughness: 0.6, transparent: true, opacity: 0.8, side: THREE.DoubleSide,
+  });
+  const up = new THREE.Vector3(0, 1, 0);
+
+  for (const v of VALVES) {
+    const holder = new THREE.Group();
+    const n = new THREE.Vector3(...v.normal).normalize();
+    const q = new THREE.Quaternion().setFromUnitVectors(up, n);
+
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(v.r, 0.085, 10, 48), ringMat);
+    ring.rotateX(Math.PI / 2);          // torus lies in xy; put it in the xz plane
+    holder.add(ring);
+
+    // Leaflets: shallow cones hanging into the ventricle, split into the right count.
+    for (let k = 0; k < v.leaflets; k++) {
+      const span = (2 * Math.PI) / v.leaflets;
+      const leaf = new THREE.Mesh(
+        new THREE.CylinderGeometry(v.r * 0.97, v.r * 0.30, v.r * 0.85, 20, 1, true, k * span, span * 0.92),
+        leafMat);
+      leaf.position.y = -v.r * 0.43;
+      holder.add(leaf);
+    }
+    holder.quaternion.copy(q);
+    holder.position.set(...v.c);
+    holder.userData.valveId = v.id;
+    valveGroup.add(holder);
+  }
+  group.add(valveGroup);
 }
 
 /* --- scanned geometry (BodyParts3D) ------------------------------- */
@@ -457,6 +595,16 @@ const SCANNED_STYLE = {
   rv: { color: '#8e5a52', vertexColours: false, opacity: 0.72 },
   la: { color: '#9d6f66', vertexColours: false, opacity: 0.55 },
   ra: { color: '#9d6f66', vertexColours: false, opacity: 0.55 },
+};
+
+// Valves and papillary muscles, scanned rather than sculpted. About 400 KB
+// together, so they are fetched the first time the reader asks to see them.
+const SCANNED_APPARATUS = {
+  mv: { color: '#e0d3bf', opacity: 0.9 },
+  tv: { color: '#e0d3bf', opacity: 0.9 },
+  av: { color: '#d8cfc0', opacity: 0.95 },
+  pv: { color: '#d8cfc0', opacity: 0.95 },
+  pap: { color: '#8f3b37', opacity: 1 },
 };
 
 let scanned = null;          // { group, meshes:{}, manifest }
@@ -508,12 +656,41 @@ async function loadScanned() {
       meshes[key] = m;
     }
     group.add(holder);
-    scanned = { group: holder, meshes, manifest,
+    scanned = { group: holder, meshes, manifest, apparatus: null,
                 lvSample: heightSampler(manifest.lvHeightMap),
                 rvSample: heightSampler(manifest.rvHeightMap) };
     return scanned;
   })();
   return scannedLoading;
+}
+
+let apparatusLoading = null;
+
+// The scanned valves and papillary muscles, fetched on first use. Once they are in,
+// the procedural stand-ins step aside in scanned mode.
+function loadApparatus() {
+  if (!scanned || scanned.apparatus) return Promise.resolve(scanned && scanned.apparatus);
+  if (apparatusLoading) return apparatusLoading;
+  apparatusLoading = (async () => {
+    const holder = new THREE.Group();
+    const meshes = {};
+    for (const [key, style] of Object.entries(SCANNED_APPARATUS)) {
+      const part = scanned.manifest.parts[key];
+      if (!part) continue;
+      const m = new THREE.Mesh(await loadPart(part.file), new THREE.MeshStandardMaterial({
+        color: style.color, roughness: 0.6, metalness: 0.02, side: THREE.DoubleSide,
+        transparent: style.opacity < 1, opacity: style.opacity,
+      }));
+      m.userData.part = key;
+      holder.add(m);
+      meshes[key] = m;
+    }
+    group.add(holder);
+    scanned.apparatus = { group: holder, meshes };
+    update();
+    return scanned.apparatus;
+  })();
+  return apparatusLoading;
 }
 
 async function applyGeometry() {
@@ -533,8 +710,9 @@ async function applyGeometry() {
     }
     surf = (th, t, off = 0) => new THREE.Vector3(...sampledPoint(s.lvSample, th, t, off));
     rvSurf = (th, t, off = 0) => new THREE.Vector3(...sampledPoint(s.rvSample, th, t, off));
-    if (note) note.textContent = `BodyParts3D scan · ${Object.values(s.manifest.parts)
-      .reduce((a, p) => a + p.triangles, 0).toLocaleString()} triangles`;
+    const tris = Object.values(s.manifest.parts)
+      .filter((p) => p.role !== 'apparatus').reduce((a, p) => a + p.triangles, 0);
+    if (note) note.textContent = `BodyParts3D scan · ${tris.toLocaleString()} triangles · valves and papillary muscles load on demand`;
   } else {
     surf = (th, t, off = 0) => new THREE.Vector3(...lvPoint(th, t, off));
     rvSurf = (th, t, off = 0) => new THREE.Vector3(...rvPoint(th, t, off));
@@ -545,6 +723,22 @@ async function applyGeometry() {
   if (scanned) scanned.group.visible = useScan;
   buildVessels();
   update();
+  refit();
+}
+
+// The scanned meshes are a different size to the procedural ones, so the framing
+// worked out at boot no longer fits once they load.
+function refit() {
+  if (!group || !camera) return;
+  group.updateMatrixWorld(true);
+  const sphere = new THREE.Box3().setFromObject(group).getBoundingSphere(new THREE.Sphere());
+  if (!sphere.radius) return;
+  heartCentre = sphere.center.clone();
+  heartRadius = sphere.radius;
+  controls.minDistance = heartRadius * 0.8;
+  controls.maxDistance = heartRadius * 6;
+  controls.target.copy(heartCentre);
+  controls.update();
 }
 
 /* --- orientation and framing ----------------------------------------- */
@@ -613,6 +807,7 @@ function initThree() {
   buildRV();
   chamberExtras = buildAtriaAndGreatVessels();
   buildVessels();
+  buildValves();
 
   lesionMarker = new THREE.Mesh(
     new THREE.SphereGeometry(0.24, 20, 16),
@@ -708,7 +903,10 @@ function paintVessels() {
     const isDead = active && dead.has(id);
     v.material.color.copy(isDead ? DEAD_COLOUR : v.base);
     setOpacity(v.material, isDead ? 0.55 : 1);
-    v.mesh.visible = v.kind === 'artery' ? state.showArteries : state.showVeins;
+    const layerOn = v.kind === 'artery' ? state.showArteries : state.showVeins;
+    // The ramus intermedius is present in only 15-30% of hearts, so it is off
+    // unless the reader asks to see variant anatomy.
+    v.mesh.visible = layerOn && (id !== 'RI' || state.showVariants);
   }
   const first = state.scenario.dead[0];
   if (active && first && vessels.has(first) && state.showArteries) {
@@ -718,6 +916,44 @@ function paintVessels() {
   } else {
     lesionMarker.visible = false;
   }
+}
+
+const DEAD_TISSUE = new THREE.Color('#7b7470');
+
+function paintPapillary() {
+  const dead = new Set(state.scenario.dead);
+  const active = STAGES[state.stage].id !== 0;
+  const sick = infarctColour(STAGES[state.stage]);
+  for (const { mesh, spec, material } of papillary.values()) {
+    const lost = spec.supply.filter((v) => dead.has(v));
+    // Dual supply means both feeds must go before the muscle dies.
+    const failed = active && (spec.dual ? lost.length === spec.supply.length : lost.length > 0);
+    material.color.copy(failed ? sick : new THREE.Color('#8f3b37'));
+    mesh.visible = state.showInternals && !(state.geometry === 'scanned' && scanned && scanned.apparatus);
+  }
+}
+
+function paintConduction() {
+  const parts = conductionState(STAGES[state.stage].id !== 0 ? state.scenario.dead : []);
+  for (const part of parts) {
+    const v = conduction.get(part.id);
+    if (!v) continue;
+    v.material.color.copy(part.failed ? DEAD_TISSUE : new THREE.Color(NODE_COLOUR));
+    v.material.emissiveIntensity = part.failed ? 0 : 0.35;
+    v.mesh.visible = state.showConduction;
+  }
+}
+
+function paintValves() {
+  const scan = state.geometry === 'scanned' && scanned;
+  // Scanned leaflets beat sculpted cones, so the procedural set only shows when
+  // the scan is off or has not arrived yet.
+  if (scan && state.showInternals && !scanned.apparatus) loadApparatus().catch((err) => {
+    console.error('heart lab: scanned valves failed to load', err);
+  });
+  const haveScan = !!(scan && scanned.apparatus);
+  if (scanned && scanned.apparatus) scanned.apparatus.group.visible = haveScan && state.showInternals;
+  if (valveGroup) valveGroup.visible = state.showInternals && !haveScan;
 }
 
 function paintChambers() {
@@ -759,25 +995,71 @@ function renderPanels() {
   $('#stage-time').textContent = st.time;
   $('#stage-short').textContent = st.short;
 
+  const dom = sc.dominance || DOMINANCE.right;
+  const vesselNote = (v) => esc(VESSEL_INFO[v] ? VESSEL_INFO[v][1] : v);
+  const vesselList = sc.dead.length
+    ? sc.dead.map((v) => '<abbr title="' + vesselNote(v) + '">' + esc(v) + '</abbr>').join(', ')
+    : '—';
   $('#panel-lesion').innerHTML = `
     <h3>${esc(sc.name)}</h3>
     <dl class="kv">
       <dt>Wall</dt><dd>${esc(sc.wall)}</dd>
       <dt>Artery</dt><dd>${esc(sc.artery)}</dd>
+      <dt>Vessels</dt><dd>${vesselList}</dd>
       <dt>Segments</dt><dd>${sc.segs.length ? sc.segs.slice().sort((a, b) => a - b).map((s) => `${s} ${SEG_NAME[s]}`).join('; ') : '—'}</dd>
+      <dt>Rate</dt><dd>${st.id === 0 ? '75' : sc.hr} bpm</dd>
     </dl>`;
 
   const leadRow = (list, cls, label) => list.length
     ? `<p class="lead-row"><span class="tag ${cls}">${label}</span> ${list.map((l) => `<b>${l}</b>`).join(', ')}</p>` : '';
+
+  // Measured off the model, in millimetres, beside the threshold each lead has to
+  // clear under the Fourth Universal Definition. Reading these is the skill.
+  const measured = ALL_LEADS
+    .map((l) => ({ l, mm: stDeviation(l, sc, st) * MM_PER_MV, bar: stThreshold(l, state.patient) * MM_PER_MV }))
+    .filter((r) => Math.abs(r.mm) >= 0.4)
+    .sort((a, b) => Math.abs(b.mm) - Math.abs(a.mm));
+  const chips = measured.map(({ l, mm, bar }) => {
+    const sig = Math.abs(mm) >= bar;
+    return `<span class="st-chip ${mm > 0 ? 'up' : 'down'}${sig ? ' is-sig' : ''}"
+      title="threshold in ${esc(l)} is ${bar.toFixed(1)} mm">${esc(l)} ${mm > 0 ? '+' : '−'}${Math.abs(mm).toFixed(1)}</span>`;
+  }).join('');
+
+  const axis = sc.injury && sc.injury.amp > 0.05
+    ? `<p class="hint">Injury vector at <b>${sc.injury.axis > 0 ? '+' : ''}${sc.injury.axis}°</b> on the hexaxial system. Every frontal lead below is the same arrow seen from a different angle — which is why the reciprocal depression is not a separate finding.</p>`
+    : '';
 
   $('#panel-ecg').innerHTML = `
     <h3>ECG</h3>
     <p>${esc(sc.leads)}</p>
     ${leadRow(sc.elevate, 'up', 'ST ↑')}
     ${leadRow(sc.depress, 'down', 'ST ↓')}
-    ${sc.posterior ? '<p class="hint">Record V7–V9 to convert the mirror image into direct ST elevation.</p>' : ''}
-    ${sc.rv ? '<p class="hint">Record V4R. ST elevation over 1 mm confirms right ventricular infarction.</p>' : ''}
+    ${axis}
+    ${chips ? `<p class="st-measure"><span class="st-measure-label">Measured at the J point</span>${chips}</p>
+      <p class="hint">Bold clears the diagnostic threshold: 1 mm in the limb and most chest leads, 2 mm in V2–V3 for a man of 40 or over, 0.5 mm in V4R and V7–V9.</p>` : ''}
+    ${sc.posterior ? '<p class="hint">V7–V9 turn the mirror image into direct ST elevation — the extra row on the trace.</p>' : ''}
+    ${sc.rv ? '<p class="hint">V4R above 0.5 mm confirms right ventricular infarction — the extra row on the trace.</p>' : ''}
     <p class="stage-note"><strong>At ${esc(st.time)}:</strong> ${esc(st.ecg)}</p>`;
+
+  // Conduction: which nodes and fascicles lost their supply, and the block that follows.
+  const cond = st.id === 0 ? null : conductionSummary(sc.dead);
+  const pmRisk = st.id === 0 ? [] : PAPILLARY.filter((pm) => {
+    const lost = pm.supply.filter((v) => sc.dead.includes(v));
+    return pm.dual ? lost.length === pm.supply.length : lost.length > 0;
+  });
+  const condEl = $('#panel-conduction');
+  if (condEl) {
+    condEl.innerHTML = `
+      <h3>Conduction and valve apparatus</h3>
+      ${cond ? `<p class="warn">${esc(cond.name)}</p><p>${esc(cond.detail)}</p>
+        <ul>${cond.parts.map((pt) => `<li><b>${esc(pt.name)}</b> — ${esc(pt.block)}</li>`).join('')}</ul>`
+        : '<p>No part of the conduction system loses its supply in this occlusion. Both nodes and all three fascicles stay perfused.</p>'}
+      ${pmRisk.length
+        ? `<p class="warn">${pmRisk.map((pm) => esc(pm.name)).join(' and ')} infarcted.</p>
+           <ul>${pmRisk.map((pm) => `<li>${esc(pm.note)}</li>`).join('')}</ul>`
+        : '<p class="hint">Both papillary muscles keep their supply. Turn on <em>Valves &amp; papillary muscles</em> to see them.</p>'}
+      <p class="hint"><b>${esc(dom.label)} (${esc(dom.prevalence)}).</b> ${esc(dom.note)}</p>`;
+  }
 
   $('#panel-distinguish').innerHTML = `
     <h3>How to tell it apart</h3>
@@ -797,6 +1079,9 @@ function renderPanels() {
 function update() {
   paintLV();
   paintVessels();
+  paintPapillary();
+  paintConduction();
+  paintValves();
   paintChambers();
   paintBullseye();
   drawECG();
@@ -810,7 +1095,16 @@ function update() {
 function buildControls() {
   const sel = $('#scenario');
   sel.innerHTML = SCENARIOS.map((s, i) => `<option value="${i}">${esc(s.name)}</option>`).join('');
-  sel.addEventListener('change', () => { state.scenario = SCENARIOS[+sel.value]; update(); });
+  sel.addEventListener('change', () => { state.base = SCENARIOS[+sel.value]; update(); });
+
+  const domSel = $('#dominance');
+  if (domSel) {
+    domSel.innerHTML = Object.values(DOMINANCE)
+      .map((d) => `<option value="${d.id}">${esc(d.label)} (${esc(d.prevalence)})</option>`).join('');
+    domSel.value = state.dominance;
+    // Dominance changes which artery reaches the crux, so the tree is rebuilt.
+    domSel.addEventListener('change', () => { state.dominance = domSel.value; buildVessels(); update(); });
+  }
 
   const slider = $('#stage-slider');
   slider.max = String(STAGES.length - 1);
@@ -821,6 +1115,18 @@ function buildControls() {
   $('#opt-veins').addEventListener('change', (e) => { state.showVeins = e.target.checked; update(); });
   $('#opt-chambers').addEventListener('change', (e) => { state.showChambers = e.target.checked; update(); });
   $('#opt-spin').addEventListener('change', (e) => { state.spin = e.target.checked; });
+  const bind = (id, key) => {
+    const el = $(id);
+    if (el) { el.checked = state[key]; el.addEventListener('change', (e) => { state[key] = e.target.checked; update(); }); }
+  };
+  bind('#opt-conduction', 'showConduction');
+  bind('#opt-internals', 'showInternals');
+  bind('#opt-variants', 'showVariants');
+  const pat = $('#patient');
+  if (pat) {
+    pat.value = state.patient;
+    pat.addEventListener('change', () => { state.patient = pat.value; update(); });
+  }
   $('#opt-scan').addEventListener('change', (e) => {
     state.geometry = e.target.checked ? 'scanned' : 'procedural';
     applyGeometry();

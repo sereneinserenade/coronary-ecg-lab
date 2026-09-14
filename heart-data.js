@@ -7,21 +7,91 @@
 
 export const LEADS = ['I', 'II', 'III', 'aVR', 'aVL', 'aVF', 'V1', 'V2', 'V3', 'V4', 'V5', 'V6'];
 
-// Normal deflection amplitudes in mV. r may be negative where the net QRS is negative (aVR, V1).
+// Leads recorded only when the story calls for them: V4R for the right ventricle,
+// V7-V9 for the posterior wall. Both are in the Fourth Universal Definition.
+export const EXTRA_LEADS = ['V4R', 'V7', 'V8', 'V9'];
+
+export const CHEST_LEADS = ['V1', 'V2', 'V3', 'V4', 'V5', 'V6'];
+export const LIMB_LEADS = ['I', 'II', 'III', 'aVR', 'aVL', 'aVF'];
+
+/* The frontal plane has only two degrees of freedom. Einthoven wired the three
+ * bipolar leads into one triangle and Goldberger derived the three augmented
+ * ones from the same three electrodes, so III, aVR, aVL and aVF are not
+ * measurements at all — they are arithmetic on I and II:
+ *
+ *   III = II - I      aVR = -(I + II)/2      aVL = I - II/2      aVF = II - I/2
+ *
+ * Typing six independent limb morphologies produces an ECG that cannot exist.
+ * So only I and II are data here; the other four are computed, and the same
+ * rule is applied again to the ST shift, which keeps reciprocal change honest. */
+const DERIVE_LIMB = {
+  III: (a, b) => b - a,
+  aVR: (a, b) => -(a + b) / 2,
+  aVL: (a, b) => a - b / 2,
+  aVF: (a, b) => b - a / 2,
+};
+
+export function deriveLimb(lead, mI, mII) {
+  const f = DERIVE_LIMB[lead];
+  const out = {};
+  for (const k of ['p', 'q', 'r', 's', 't']) out[k] = f(mI[k], mII[k]);
+  return out;
+}
+
+// Hexaxial reference system: where each frontal lead looks from, in degrees.
+export const LEAD_AXIS = { I: 0, II: 60, III: 120, aVR: -150, aVL: -30, aVF: 90 };
+
+// The augmented leads carry a gain of sqrt(3)/2 against the bipolar ones — which is
+// exactly what makes projection onto LEAD_AXIS agree with the Goldberger algebra above.
+const AUG = Math.sqrt(3) / 2;
+export const LEAD_GAIN = { I: 1, II: 1, III: 1, aVR: AUG, aVL: AUG, aVF: AUG };
+
+// A dipole of magnitude `amp` pointing along `axisDeg`, read by one frontal lead.
+export function project(amp, axisDeg, lead) {
+  return amp * LEAD_GAIN[lead] * Math.cos((LEAD_AXIS[lead] - axisDeg) * Math.PI / 180);
+}
+
+/* Normal deflection amplitudes in mV.
+ * I and II are seeded for a mean QRS axis near +45 deg; the rest of the frontal
+ * plane falls out of deriveLimb, and the chest leads are independent measurements. */
+const SEED = {
+  I:  { p: 0.11, q: -0.03, r: 0.84, s: -0.07, t: 0.23 },
+  II: { p: 0.15, q: -0.04, r: 1.15, s: -0.10, t: 0.32 },
+};
+
 export const MORPH = {
-  I:   { p: 0.10, q: -0.04, r: 0.75, s: -0.08, t: 0.22 },
-  II:  { p: 0.15, q: -0.04, r: 1.15, s: -0.10, t: 0.32 },
-  III: { p: 0.06, q: -0.03, r: 0.45, s: -0.12, t: 0.10 },
-  aVR: { p: -0.12, q: 0.00, r: -0.85, s: 0.00, t: -0.25 },
-  aVL: { p: 0.06, q: -0.03, r: 0.40, s: -0.10, t: 0.12 },
-  aVF: { p: 0.11, q: -0.03, r: 0.70, s: -0.10, t: 0.20 },
+  ...SEED,
+  ...Object.fromEntries(Object.keys(DERIVE_LIMB).map((l) => [l, deriveLimb(l, SEED.I, SEED.II)])),
   V1:  { p: 0.08, q: 0.00, r: 0.20, s: -1.05, t: -0.05 },
   V2:  { p: 0.10, q: 0.00, r: 0.35, s: -1.50, t: 0.35 },
   V3:  { p: 0.10, q: 0.00, r: 0.70, s: -1.00, t: 0.40 },
   V4:  { p: 0.10, q: -0.04, r: 1.45, s: -0.55, t: 0.38 },
   V5:  { p: 0.10, q: -0.06, r: 1.35, s: -0.25, t: 0.30 },
   V6:  { p: 0.09, q: -0.05, r: 1.00, s: -0.12, t: 0.22 },
+  // V4R faces the right ventricle: a small rS, like V1 but smaller still.
+  V4R: { p: 0.06, q: 0.00, r: 0.16, s: -0.42, t: 0.09 },
+  // V7-V9 run round the back under the scapula; R falls off as they go lateral.
+  V7:  { p: 0.07, q: -0.03, r: 0.62, s: -0.22, t: 0.16 },
+  V8:  { p: 0.06, q: -0.03, r: 0.50, s: -0.16, t: 0.14 },
+  V9:  { p: 0.05, q: -0.02, r: 0.40, s: -0.12, t: 0.12 },
 };
+
+/* Diagnostic J-point thresholds, Fourth Universal Definition of Myocardial
+ * Infarction (2018), in mV. Two contiguous leads must clear the bar. */
+export const ST_THRESHOLD = {
+  limb: 0.1, chest: 0.1,
+  V2: { 'man>=40': 0.2, 'man<40': 0.25, woman: 0.15 },
+  V3: { 'man>=40': 0.2, 'man<40': 0.25, woman: 0.15 },
+  V4R: { 'man<30': 0.1, other: 0.05 },
+  posterior: 0.05,
+};
+
+export function stThreshold(lead, patient = 'man>=40') {
+  if (lead === 'V2' || lead === 'V3') return ST_THRESHOLD[lead][patient] ?? ST_THRESHOLD[lead]['man>=40'];
+  if (lead === 'V4R') return patient === 'man<30' ? ST_THRESHOLD.V4R['man<30'] : ST_THRESHOLD.V4R.other;
+  if (['V7', 'V8', 'V9'].includes(lead)) return ST_THRESHOLD.posterior;
+  return ST_THRESHOLD.limb;
+}
 
 // AHA 17-segment model.
 export const SEG_NAME = {
@@ -138,7 +208,7 @@ export const STAGES = [
 export const SCENARIOS = [
   {
     id: 'none', name: 'No occlusion (normal)', wall: '—', artery: '—',
-    dead: [], segs: [], elevate: [], depress: [], rv: false, subendo: false,
+    dead: [], segs: [], expectElevate: [], expectDepress: [], rv: false, subendo: false,
     leads: 'Normal.',
     distinguish: ['Use this as the baseline. Step the timeline and nothing changes, because nothing is occluded.'],
     gross: 'Normal heart. Coronary arteries patent, myocardium uniformly red-brown.',
@@ -147,7 +217,7 @@ export const SCENARIOS = [
     id: 'lm', name: 'Left main occlusion', wall: 'Anterior + lateral (massive)', artery: 'Left main coronary artery',
     dead: ['LM', 'LAD1', 'LAD2', 'LAD3', 'D1', 'D2', 'S1', 'S2', 'S3', 'LCX1', 'LCX2', 'OM1', 'OM2'],
     segs: [1, 2, 6, 7, 8, 11, 12, 13, 14, 16, 17, 5],
-    elevate: ['aVR', 'V1'], depress: ['I', 'II', 'aVF', 'V3', 'V4', 'V5', 'V6', 'III'],
+    expectElevate: ['aVR', 'V1'], expectDepress: ['I', 'II', 'aVF', 'V3', 'V4', 'V5', 'V6', 'III'],
     rv: false, subendo: false,
     leads: 'ST elevation in aVR greater than in V1, with widespread ST depression in eight or more leads.',
     distinguish: [
@@ -161,7 +231,7 @@ export const SCENARIOS = [
     id: 'lad-prox', name: 'Proximal LAD (before D1 and S1)', wall: 'Extensive anterior', artery: 'Left anterior descending',
     dead: ['LAD1', 'LAD2', 'LAD3', 'D1', 'D2', 'S1', 'S2', 'S3'],
     segs: [1, 2, 6, 7, 8, 12, 13, 14, 17],
-    elevate: ['V1', 'V2', 'V3', 'V4', 'V5', 'V6', 'I', 'aVL'], depress: ['III', 'aVF', 'II'],
+    expectElevate: ['V1', 'V2', 'V3', 'V4', 'V5', 'V6', 'I', 'aVL'], expectDepress: ['III', 'aVF', 'II'],
     rv: false, subendo: false,
     leads: 'ST elevation V1–V6 plus I and aVL, with reciprocal depression in II, III and aVF.',
     distinguish: [
@@ -175,7 +245,7 @@ export const SCENARIOS = [
     id: 'lad-mid', name: 'Mid LAD (after D1)', wall: 'Anteroseptal', artery: 'Left anterior descending',
     dead: ['LAD2', 'LAD3', 'D2', 'S2', 'S3'],
     segs: [1, 2, 7, 8, 13, 14, 17],
-    elevate: ['V1', 'V2', 'V3', 'V4'], depress: ['III'],
+    expectElevate: ['V1', 'V2', 'V3', 'V4'], expectDepress: ['III'],
     rv: false, subendo: false,
     leads: 'ST elevation V1–V4 (anteroseptal), little or no limb-lead change.',
     distinguish: [
@@ -188,7 +258,7 @@ export const SCENARIOS = [
     id: 'lad-wrap', name: 'Distal / wrap-around LAD', wall: 'Apical + inferoapical', artery: 'LAD (type III, wraps the apex)',
     dead: ['LAD3'],
     segs: [13, 14, 15, 16, 17],
-    elevate: ['V3', 'V4', 'V5', 'V6', 'II', 'III', 'aVF'], depress: [],
+    expectElevate: ['V3', 'V4', 'V5', 'V6', 'II', 'III', 'aVF'], expectDepress: [],
     rv: false, subendo: false,
     leads: 'ST elevation in the apical precordial leads AND the inferior leads at the same time.',
     distinguish: [
@@ -201,7 +271,7 @@ export const SCENARIOS = [
     id: 'd1', name: 'First diagonal (D1)', wall: 'High lateral', artery: 'First diagonal branch',
     dead: ['D1'],
     segs: [6, 12],
-    elevate: ['I', 'aVL', 'V2'], depress: ['III', 'aVF'],
+    expectElevate: ['I', 'aVL', 'V2'], expectDepress: ['III', 'aVF'],
     rv: false, subendo: false,
     leads: 'ST elevation in I, aVL and V2, with ST depression in III.',
     distinguish: [
@@ -214,7 +284,7 @@ export const SCENARIOS = [
     id: 'lcx', name: 'Circumflex / obtuse marginal', wall: 'Lateral (± posterior)', artery: 'Left circumflex',
     dead: ['LCX1', 'LCX2', 'OM1', 'OM2'],
     segs: [5, 6, 11, 12, 16],
-    elevate: ['I', 'aVL', 'V5', 'V6'], depress: ['V1', 'V2', 'V3'],
+    expectElevate: ['I', 'aVL', 'V5', 'V6'], expectDepress: ['V1', 'V2', 'V3'],
     rv: false, subendo: false,
     leads: 'ST elevation in I, aVL, V5 and V6, often with ST depression in V1–V3 from posterior extension.',
     distinguish: [
@@ -228,12 +298,12 @@ export const SCENARIOS = [
     id: 'rca-prox', name: 'Proximal RCA (with RV infarct)', wall: 'Inferior + right ventricle', artery: 'Right coronary artery',
     dead: ['RCA1', 'RCA2', 'RCA3', 'AM', 'PDA', 'PLV', 'SAN', 'AVN'],
     segs: [3, 4, 9, 10, 15],
-    elevate: ['II', 'III', 'aVF', 'V1'], depress: ['I', 'aVL'],
+    expectElevate: ['II', 'III', 'aVF', 'V1'], expectDepress: ['I', 'aVL'],
     rv: true, subendo: false,
     leads: 'ST elevation II, III and aVF with III greater than II, reciprocal depression in I and aVL, and ST elevation in V1.',
     distinguish: [
       'ST elevation in III greater than in II, plus ST depression in I and aVL, identifies the RCA rather than the circumflex.',
-      'ST elevation in V1 (or better, V4R above 1 mm) means right ventricular involvement — the lesion is proximal to the acute marginal branch.',
+      'ST elevation in V1, or better V4R above 0.5 mm (1 mm in a man under 30), means right ventricular involvement — the lesion is proximal to the acute marginal branch.',
       'Clinically: hypotension with a raised JVP and clear lung fields. These patients are preload dependent — give fluid, avoid nitrates and opiates.',
       'The RCA supplies the SA node in about 60% and the AV node in about 85%, so bradycardia and AV block are common.',
     ],
@@ -243,7 +313,7 @@ export const SCENARIOS = [
     id: 'rca-mid', name: 'Mid / distal RCA', wall: 'Inferior', artery: 'Right coronary artery',
     dead: ['RCA2', 'RCA3', 'PDA', 'PLV', 'AVN'],
     segs: [3, 4, 9, 10, 15],
-    elevate: ['II', 'III', 'aVF'], depress: ['I', 'aVL'],
+    expectElevate: ['II', 'III', 'aVF'], expectDepress: ['I', 'aVL'],
     rv: false, subendo: false,
     leads: 'ST elevation II, III and aVF with reciprocal depression in I and aVL. No V1 elevation.',
     distinguish: [
@@ -256,7 +326,7 @@ export const SCENARIOS = [
     id: 'pda', name: 'Posterior (inferobasal) MI', wall: 'Posterior / inferobasal', artery: 'PDA — from RCA or a dominant LCx',
     dead: ['PDA', 'PLV'],
     segs: [4, 5, 10],
-    elevate: [], depress: ['V1', 'V2', 'V3'],
+    expectElevate: [], expectDepress: ['V1', 'V2', 'V3'],
     rv: false, subendo: false, posterior: true,
     leads: 'Horizontal ST depression in V1–V3 with a tall broad R wave in V2 (R/S over 1) and an upright T wave. ST elevation appears in posterior leads V7–V9.',
     distinguish: [
@@ -270,7 +340,7 @@ export const SCENARIOS = [
     id: 'nstemi', name: 'Circumferential subendocardial (NSTEMI / demand)', wall: 'Subendocardial, all walls', artery: 'Supply–demand mismatch, no single occlusion',
     dead: [],
     segs: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
-    elevate: ['aVR'], depress: ['I', 'II', 'V3', 'V4', 'V5', 'V6', 'aVF'],
+    expectElevate: ['aVR'], expectDepress: ['I', 'II', 'V3', 'V4', 'V5', 'V6', 'aVF'],
     rv: false, subendo: true,
     leads: 'Widespread horizontal ST depression, maximal in V4–V6, with ST elevation in aVR. No Q waves develop.',
     distinguish: [
@@ -283,15 +353,226 @@ export const SCENARIOS = [
 ];
 
 
+/* ------------------------------------------------------------------ *
+ * THE INJURY VECTOR
+ *
+ * Acute ischaemia makes the injured wall electrically positive relative to the
+ * rest, so the ST segment is a single current-of-injury dipole pointing away
+ * from the endocardium of the infarct. Every frontal lead sees the SAME vector
+ * from its own angle — which is why reciprocal depression is not an extra
+ * finding to memorise but the far side of one arrow.
+ *
+ * `axis` is where that arrow points on the hexaxial system, in degrees.
+ * `amp` scales it against the stage's ST magnitude. `chest` gives the six
+ * precordial leads and the extras directly, as fractions of the same magnitude,
+ * because the horizontal plane is not derivable from the frontal one.
+ * ------------------------------------------------------------------ */
+export const INJURY = {
+  none:       { axis: 0,    amp: 0,    chest: {} },
+  // Global subendocardial: the vector runs away from the whole left ventricle,
+  // towards the right shoulder. aVR looks straight down it; everything else sees its tail.
+  lm:         { axis: -135, amp: 0.55, chest: { V1: 0.30, V2: -0.40, V3: -0.70, V4: -0.85, V5: -0.80, V6: -0.60 } },
+  'lad-prox': { axis: -52,  amp: 0.52, chest: { V1: 0.50, V2: 0.95, V3: 1.00, V4: 0.90, V5: 0.60, V6: 0.40 } },
+  'lad-mid':  { axis: -40,  amp: 0.22, chest: { V1: 0.45, V2: 0.95, V3: 1.00, V4: 0.85, V5: 0.24, V6: 0.08 } },
+  // A wrap-around LAD injures apex and inferoapical wall at once, so the arrow
+  // swings inferiorly and no lead ends up squarely behind it.
+  'lad-wrap': { axis: 75,   amp: 0.55, chest: { V1: 0.10, V2: 0.30, V3: 0.70, V4: 0.90, V5: 0.80, V6: 0.60 } },
+  d1:         { axis: -35,  amp: 0.75, chest: { V1: 0.05, V2: 0.35, V3: 0.10, V4: 0.00, V5: 0.05, V6: 0.05 } },
+  lcx:        { axis: -20,  amp: 0.45, chest: { V1: -0.50, V2: -0.70, V3: -0.50, V4: 0.20, V5: 0.70, V6: 0.65,
+                                                V7: 0.55, V8: 0.45, V9: 0.35 } },
+  // III greater than II, and aVL the deepest reciprocal: that is an axis past 90.
+  'rca-prox': { axis: 115,  amp: 1.00, chest: { V1: 0.35, V2: -0.10, V3: -0.30, V4: -0.20, V5: -0.10, V6: 0.00,
+                                                V4R: 0.55 } },
+  'rca-mid':  { axis: 112,  amp: 0.95, chest: { V1: 0.00, V2: -0.25, V3: -0.35, V4: -0.20, V5: 0.00, V6: 0.00,
+                                                V4R: 0.05 } },
+  // The posterior wall faces directly away from every standard electrode, so the
+  // frontal projection is almost nothing and the diagnosis lives in V1-V3 and V7-V9.
+  pda:        { axis: 100,  amp: 0.15, chest: { V1: -0.70, V2: -0.95, V3: -0.70, V4: -0.30, V5: 0.00, V6: 0.10,
+                                                V7: 0.60, V8: 0.55, V9: 0.45 } },
+  nstemi:     { axis: -150, amp: 0.50, chest: { V1: -0.20, V2: -0.50, V3: -0.80, V4: -1.00, V5: -0.95, V6: -0.75 } },
+};
+
+/* Heart rate is part of the clinical picture, not decoration. An inferior MI
+ * knocks out the sinus node's supply and stimulates vagal afferents on the
+ * inferior wall (the Bezold-Jarisch reflex), so it runs slow; an anterior MI
+ * loses pump function and runs fast. */
+export const SCENARIO_HR = {
+  none: 75, lm: 112, 'lad-prox': 104, 'lad-mid': 92, 'lad-wrap': 88,
+  d1: 80, lcx: 82, 'rca-prox': 50, 'rca-mid': 56, pda: 62, nstemi: 108,
+};
+
+export const ALL_LEADS = [...LEADS, ...EXTRA_LEADS];
+
+// ST deviation at the J point, in mV, for one lead under one scenario and stage.
+export function stDeviation(lead, scenario, stage) {
+  const inj = scenario.injury || INJURY[scenario.id] || INJURY.none;
+  if (!stage.st) return 0;
+  if (LEAD_AXIS[lead] !== undefined) return stage.st * project(inj.amp, inj.axis, lead);
+  return stage.st * (inj.chest[lead] || 0);
+}
+
+// Which leads a reader would call elevated or depressed, measured off the model at
+// its peak rather than listed by hand — so the labels can never drift from the trace.
+const PEAK = STAGES.reduce((a, b) => (b.st > a.st ? b : a));
+
+for (const sc of SCENARIOS) {
+  sc.injury = INJURY[sc.id] || INJURY.none;
+  sc.hr = SCENARIO_HR[sc.id] || 75;
+  sc.elevate = [];
+  sc.depress = [];
+  sc.extras = EXTRA_LEADS.filter((l) => Math.abs(sc.injury.chest[l] || 0) > 0.02);
+  for (const lead of ALL_LEADS) {
+    const mv = stDeviation(lead, sc, PEAK);
+    if (mv >= 0.1) sc.elevate.push(lead);
+    else if (mv <= -0.05) sc.depress.push(lead);
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * DOMINANCE
+ *
+ * Dominance is decided by one thing: which artery gives off the posterior
+ * descending. It moves the inferior wall, the posterior third of the septum and
+ * the AV nodal branch from one system to the other, so it changes the answer to
+ * "which vessel caused this inferior MI" more than any other variation.
+ * Prevalences from the AHA review of coronary dominance.
+ * ------------------------------------------------------------------ */
+export const DOMINANCE = {
+  right: {
+    id: 'right', label: 'Right dominant', prevalence: '~85%',
+    pdaFrom: 'RCA', plvFrom: 'RCA', avnFrom: 'RCA',
+    note: 'The usual arrangement. The posterior descending and the posterolateral branches both come off the RCA past the crux, so the inferior wall, the posterior third of the septum and the AV node are all RCA territory.',
+  },
+  left: {
+    id: 'left', label: 'Left dominant', prevalence: '~8%',
+    pdaFrom: 'LCX', plvFrom: 'LCX', avnFrom: 'LCX',
+    note: 'The circumflex reaches the crux and gives the posterior descending. One vessel now feeds the lateral AND inferior walls, so a circumflex occlusion infarcts far more muscle and carries the worse prognosis. An RCA occlusion, conversely, spares the left ventricle almost entirely.',
+  },
+  codominant: {
+    id: 'codominant', label: 'Co-dominant', prevalence: '~7%',
+    pdaFrom: 'RCA', plvFrom: 'LCX', avnFrom: 'RCA',
+    note: 'The RCA gives the posterior descending, the circumflex the posterolateral branches. The inferior wall stays with the RCA; the inferolateral wall moves across to the circumflex.',
+  },
+};
+
+// Segments fed through the crux: the inferior wall and the inferobasal corner.
+const CRUX_SEGS = [3, 4, 9, 10, 15];
+// The AHA map already gives the inferolateral segments to the circumflex, so
+// co-dominance moves the vessel at risk without moving any segment.
+const PLV_SEGS = [];
+
+/* A scenario as it plays out in one particular heart. Returns a new object —
+ * the base SCENARIOS array always describes the right-dominant case. */
+export function withDominance(sc, domId = 'right') {
+  const dom = DOMINANCE[domId] || DOMINANCE.right;
+  if (dom.id === 'right' || sc.id === 'none' || sc.id === 'nstemi') return { ...sc, dominance: dom };
+
+  const dead = new Set(sc.dead);
+  const segs = new Set(sc.segs);
+  const isRca = sc.id.startsWith('rca');
+  const isLcx = sc.id === 'lcx';
+  let extra = '';
+
+  const move = (vessels, fromRight) => {
+    for (const v of vessels) (fromRight ? dead.delete(v) : dead.add(v));
+  };
+  const moveSegs = (list, drop) => { for (const g of list) (drop ? segs.delete(g) : segs.add(g)); };
+
+  if (dom.pdaFrom === 'LCX') {
+    if (isRca) {
+      move(['PDA', 'PLV', 'AVN'], true);
+      moveSegs(CRUX_SEGS, true);
+      moveSegs(PLV_SEGS, true);
+      extra = 'In this heart the circumflex reaches the crux, so the RCA never supplies the inferior wall. An RCA occlusion here takes the right ventricle and the atria and leaves the left ventricle almost untouched — a much smaller infarct than the same lesion in a right-dominant heart.';
+    } else if (isLcx) {
+      move(['PDA', 'PLV', 'AVN'], false);
+      moveSegs(CRUX_SEGS, false);
+      extra = 'The circumflex is dominant, so this one occlusion takes the lateral wall AND the whole inferior wall and posterior septum. Expect inferior ST elevation on top of the lateral changes, AV block from the circumflex AV nodal branch, and a far larger infarct than a right-dominant circumflex lesion.';
+    }
+  } else if (dom.plvFrom === 'LCX') {
+    if (isRca) {
+      move(['PLV'], true);
+      moveSegs(PLV_SEGS, true);
+      extra = 'Co-dominant: the RCA still gives the posterior descending, so the inferior wall infarcts as usual. The posterolateral branches come off the circumflex instead, so they survive this occlusion — the wall map is unchanged, the vessels at risk are not.';
+    } else if (isLcx) {
+      move(['PLV'], false);
+      moveSegs(PLV_SEGS, false);
+      extra = 'Co-dominant: the posterolateral branches arise from the circumflex, so they go down with it. The inferior wall itself still belongs to the RCA and is spared.';
+    }
+  }
+
+  if (sc.id === 'pda') {
+    extra = `The posterior descending arises from the ${dom.pdaFrom === 'LCX' ? 'dominant circumflex' : 'RCA'} in this heart, so that is the vessel to look for on the angiogram.`;
+  }
+
+  return {
+    ...sc,
+    dominance: dom,
+    dead: [...dead],
+    segs: [...segs].sort((a, b) => a - b),
+    distinguish: extra ? [...sc.distinguish, extra] : sc.distinguish,
+  };
+}
+
+// Which of the three big vessels owns each AHA segment, for this heart.
+export function territoryFor(domId = 'right') {
+  const dom = DOMINANCE[domId] || DOMINANCE.right;
+  const t = { LAD: [...TERRITORY.LAD], RCA: [...TERRITORY.RCA], LCX: [...TERRITORY.LCX] };
+  if (dom.pdaFrom === 'LCX') {
+    t.LCX = [...t.LCX, ...t.RCA].sort((a, b) => a - b);
+    t.RCA = [];
+  }
+  return t;
+}
+
 // Every vessel the 3D scene builds. Scenario `dead` lists must be a subset of this.
 export const VESSEL_IDS = [
-  'LM', 'LAD1', 'LAD2', 'LAD3', 'D1', 'D2', 'S1', 'S2', 'S3',
+  'LM', 'LAD1', 'LAD2', 'LAD3', 'D1', 'D2', 'S1', 'S2', 'S3', 'RI',
   'LCX1', 'LCX2', 'OM1', 'OM2',
-  'RCA1', 'RCA2', 'RCA3', 'AM', 'PDA', 'PLV', 'SAN', 'AVN',
+  'RCA1', 'RCA2', 'RCA3', 'AM', 'CB', 'RV1', 'RV2', 'PDA', 'PS1', 'PS2', 'PLV', 'SAN', 'AVN',
   'CS', 'GCV', 'MCV', 'SCV', 'PVLV', 'ACV',
 ];
 
-export const RR = 0.8;        // seconds per beat (HR 75)
+/* What each coronary is called and what it feeds, for the model's own legend.
+ * `variant` notes how often the vessel is absent or arises elsewhere. */
+export const VESSEL_INFO = {
+  LM: ['Left main', 'Left coronary sinus to the LAD/LCx bifurcation. 5-10 mm long; occlusion here is the widowmaker.'],
+  LAD1: ['Proximal LAD', 'Anterior interventricular groove, before the first septal and first diagonal.'],
+  LAD2: ['Mid LAD', 'Between the first diagonal and the apex.'],
+  LAD3: ['Distal LAD', 'Apical. Wraps round onto the inferior wall in about two thirds of hearts (type III).'],
+  D1: ['First diagonal', 'Anterolateral wall. Shares the anterolateral papillary muscle with OM1.'],
+  D2: ['Second diagonal', 'Mid anterolateral wall.'],
+  RI: ['Ramus intermedius', 'A third branch straight off the left main, between the LAD and the circumflex. Present in 15-30% of hearts.'],
+  S1: ['First septal perforator', 'Anterior two-thirds of the septum, plus the right bundle and the left anterior fascicle.'],
+  S2: ['Second septal perforator', 'Mid anterior septum.'],
+  S3: ['Third septal perforator', 'Apical septum.'],
+  LCX1: ['Proximal circumflex', 'Left atrioventricular groove, before the first obtuse marginal.'],
+  LCX2: ['Distal circumflex', 'Continues round the AV groove; reaches the crux only in a left-dominant heart.'],
+  OM1: ['First obtuse marginal', 'Lateral free wall. Second supply to the anterolateral papillary muscle.'],
+  OM2: ['Second obtuse marginal', 'Inferolateral wall.'],
+  RCA1: ['Proximal RCA', 'Right AV groove, before the acute marginal.'],
+  RCA2: ['Mid RCA', 'Between the acute marginal and the crux.'],
+  RCA3: ['Distal RCA', 'Reaches the crux and gives the PDA in a right-dominant heart.'],
+  CB: ['Conus branch', 'First branch of the RCA, to the RV outflow tract. Arises from its own aortic ostium in roughly half of hearts, and collateralises the LAD through the circle of Vieussens.'],
+  AM: ['Acute marginal', 'Right ventricular free wall. A lesion proximal to it puts the RV at risk.'],
+  RV1: ['Right ventricular branch', 'Anterior RV free wall.'],
+  RV2: ['Right ventricular branch', 'Mid RV free wall.'],
+  PDA: ['Posterior descending', 'Posterior interventricular groove: inferior wall and the posterior third of the septum. Defines dominance.'],
+  PS1: ['Posterior septal perforator', 'Posterior third of the septum, running up to meet the anterior septals.'],
+  PS2: ['Posterior septal perforator', 'Apical posterior septum.'],
+  PLV: ['Posterolateral branch', 'Inferolateral wall past the crux.'],
+  SAN: ['Sinus node artery', 'To the sinoatrial node. From the RCA in about 60% of hearts, the circumflex in the rest.'],
+  AVN: ['AV nodal artery', 'A short branch at the crux, from whichever artery is dominant. RCA in about 90%.'],
+  CS: ['Coronary sinus', 'Posterior AV groove, into the right atrium. Takes almost all the venous return.'],
+  GCV: ['Great cardiac vein', 'Up the anterior interventricular groove beside the LAD, then round into the coronary sinus.'],
+  MCV: ['Middle cardiac vein', 'Posterior interventricular groove beside the PDA.'],
+  SCV: ['Small cardiac vein', 'Right AV groove beside the RCA.'],
+  PVLV: ['Posterior vein of the LV', 'The target for the left ventricular lead in cardiac resynchronisation.'],
+  ACV: ['Anterior cardiac veins', 'Drain the RV straight into the right atrium, bypassing the coronary sinus.'],
+};
+
+export const RR = 0.8;        // seconds per beat at HR 75; scenarios set their own rate
+export const rrFor = (hr) => 60 / (hr || 75);
 export const MM_PER_S = 25;
 export const MM_PER_MV = 10;
 
@@ -335,20 +616,23 @@ export function ahaSegment(thetaDeg, t) {
 }
 
 // Apply a scenario and a stage to one lead: returns the modified morphology and the ST offset in mV.
-export function leadState(lead, scenario, stage) {
+// Only I, II and the chest leads are modified directly. The other four frontal leads
+// are re-derived afterwards, so the twelve-lead stays a possible recording at every step.
+function morphFor(lead, scenario, stage) {
   const m = { ...MORPH[lead] };
-  let offset = 0;
+  // Keyed on the lead's role at the peak, not its deviation right now: the Q wave
+  // outlives the ST elevation by decades, so it cannot be driven by the current shift.
+  const up = scenario.elevate.includes(lead);
+  const down = scenario.depress.includes(lead);
 
-  if (scenario.elevate.includes(lead)) {
-    offset = stage.st;
+  if (up) {
     m.t *= stage.tMul;
     if (!scenario.subendo && stage.q > 0) {
       const depth = stage.q * 0.55;
       m.q = Math.min(m.q, 0) - depth * Math.max(0.4, Math.abs(m.r));
       m.r *= 1 - 0.75 * stage.q;
     }
-  } else if (scenario.depress.includes(lead)) {
-    offset = -stage.st * 0.45;
+  } else if (down) {
     if (stage.tMul < 0) m.t *= 0.6;
     // Posterior MI: the mirror-image R wave grows in V1-V3 as the posterior Q wave forms.
     if (scenario.posterior && ['V1', 'V2', 'V3'].includes(lead) && stage.q > 0) {
@@ -357,7 +641,18 @@ export function leadState(lead, scenario, stage) {
       m.t = Math.abs(m.t) + stage.q * 0.1;
     }
   }
-  return { m, offset };
+  return m;
+}
+
+export function leadState(lead, scenario, stage) {
+  const offset = stDeviation(lead, scenario, stage);
+  if (DERIVE_LIMB[lead]) {
+    return {
+      m: deriveLimb(lead, morphFor('I', scenario, stage), morphFor('II', scenario, stage)),
+      offset,
+    };
+  }
+  return { m: morphFor(lead, scenario, stage), offset };
 }
 
 /* ------------------------------------------------------------------ *
@@ -496,6 +791,178 @@ export const rvRadius = (thetaDeg, t) => {
   const p = rvPoint(thetaDeg, t);
   return Math.hypot(p[0], p[2]);
 };
+
+/* ------------------------------------------------------------------ *
+ * PAPILLARY MUSCLES
+ *
+ * Two groups, and the difference between them is a blood supply, not a shape.
+ * The anterolateral muscle is fed twice over — by the first diagonal and the
+ * first obtuse marginal — while the posteromedial one hangs off the posterior
+ * descending alone. That single supply is why posteromedial rupture after an
+ * inferior MI is 6-12 times commoner than anterolateral rupture.
+ * ------------------------------------------------------------------ */
+export const PAPILLARY = [
+  {
+    id: 'ALPM', name: 'anterolateral papillary muscle', short: 'anterolateral',
+    theta: 55, base: 0.74, tip: 0.44, r0: 0.55, r1: 0.30, lean: 0.50,
+    supply: ['D1', 'OM1'], dual: true,
+    note: 'Dual supply from the first diagonal and the first obtuse marginal. Rarely ruptures.',
+  },
+  {
+    id: 'PMPM', name: 'posteromedial papillary muscle', short: 'posteromedial',
+    theta: 246, base: 0.76, tip: 0.46, r0: 0.50, r1: 0.28, lean: 0.50,
+    supply: ['PDA'], dual: false,
+    note: 'Single supply from the posterior descending. This is the one that ruptures, three to seven days after an inferior MI, giving sudden severe mitral regurgitation and flash pulmonary oedema.',
+  },
+];
+
+// Base sits on the endocardium; the tip stands free in the cavity, leaning towards the axis.
+export function papillaryAxisPoints(pm) {
+  const a = pm.theta * Math.PI / 180;
+  const rBase = Math.max(0.1, lvEndo(pm.theta, pm.base));
+  const rTip = Math.max(0.1, lvEndo(pm.theta, pm.tip)) * pm.lean;
+  return [
+    [rBase * Math.cos(a), lvSurfY(pm.theta, pm.base), rBase * Math.sin(a)],
+    [rTip * Math.cos(a), lvSurfY(pm.theta, pm.tip), rTip * Math.sin(a)],
+  ];
+}
+
+/* ------------------------------------------------------------------ *
+ * CONDUCTION SYSTEM
+ *
+ * Worth drawing because its blood supply is not the same as the muscle's, and
+ * that mismatch is the whole explanation for two facts the page already states:
+ * why heart block belongs to inferior infarcts, and why new right bundle branch
+ * block with left anterior fascicular block localises a LAD lesion proximal to
+ * the first septal perforator.
+ *
+ * Supply, from the anatomical literature: the sinus node artery comes off the
+ * RCA in about 60% of hearts and the circumflex in the rest; the AV nodal
+ * artery comes off whichever artery reaches the crux, so the RCA in about 90%.
+ * The His bundle is dual-supplied (AV nodal artery plus the first septal
+ * perforator). The right bundle and the left ANTERIOR fascicle are thin and
+ * fed by the septal perforators alone — which is what makes them the pair that
+ * fails together. The left posterior fascicle is broad and dual-supplied, so
+ * isolated left posterior fascicular block is rare.
+ * ------------------------------------------------------------------ */
+
+const septalEndo = (t) => lvEndoPoint(180, t);
+
+export const CONDUCTION = [
+  {
+    id: 'SAN', name: 'sinoatrial node', kind: 'node',
+    at: [-3.30, 5.55, 0.62], r: 0.26,
+    supply: ['SAN'], dual: false,
+    block: 'Sinus node ischaemia: sinus bradycardia, sinus arrest or a junctional escape rhythm.',
+    note: 'At the junction of the superior vena cava and the right atrial appendage. Fed by the sinus node artery, off the RCA in about 60% of hearts.',
+  },
+  {
+    id: 'AVN', name: 'atrioventricular node', kind: 'node',
+    at: [-0.62, 3.00, -0.78], r: 0.22,
+    supply: ['AVN'], dual: false,
+    block: 'AV nodal ischaemia: first-degree or Mobitz I (Wenckebach) block, sometimes complete block — but narrow complex, atropine-responsive and usually temporary.',
+    note: 'In the triangle of Koch, bounded by the septal leaflet of the tricuspid valve, the tendon of Todaro and the mouth of the coronary sinus. Fed by the AV nodal branch of whichever artery reaches the crux.',
+  },
+  {
+    id: 'HIS', name: 'bundle of His', kind: 'path',
+    path: [[-0.62, 3.00, -0.78], [-0.75, 2.55, -0.45], [-0.95, 2.15, -0.10]], r: 0.09,
+    supply: ['AVN', 'S1'], dual: true,
+    block: 'Infranodal block: wide complex, unresponsive to atropine, and it does not recover on its own.',
+    note: 'Penetrates the central fibrous body and the membranous septum, runs 1-3 mm along the septal crest, then divides. Dual-supplied, so it survives most single occlusions.',
+  },
+  {
+    id: 'RBB', name: 'right bundle branch', kind: 'path',
+    path: [[-0.95, 2.15, -0.10], [-1.75, 1.30, 0.55], [-2.35, -0.30, 1.05],
+           [-2.70, -1.70, 1.15], [-2.55, -2.60, 0.85]], r: 0.075,
+    supply: ['S1', 'S2'], dual: false,
+    block: 'Right bundle branch block: RSR′ in V1 with a wide slurred S in I and V6.',
+    note: 'A thin unbranched cord running down the right side of the septum to the moderator band and the anterior papillary muscle of the right ventricle. Fed by septal perforators only, which is why it is the first thing a proximal LAD occlusion takes out.',
+  },
+  {
+    id: 'LAF', name: 'left anterior fascicle', kind: 'path',
+    path: [septalEndo(0.16), [-1.15, 1.10, 0.55], [-0.35, 0.05, 1.05], [0.55, -1.05, 1.05]], r: 0.07,
+    supply: ['S1'], dual: false,
+    block: 'Left anterior fascicular block: left axis deviation past −45°, qR in aVL, rS inferiorly.',
+    note: 'Thin and tendon-like, running to the anterolateral papillary muscle. Single septal supply, so it fails alongside the right bundle — new RBBB with LAFB places the lesion proximal to the first septal perforator.',
+  },
+  {
+    id: 'LPF', name: 'left posterior fascicle', kind: 'path',
+    path: [septalEndo(0.16), [-1.20, 1.05, -0.60], [-0.75, -0.35, -1.30], [-0.05, -1.55, -1.55]], r: 0.10,
+    supply: ['S1', 'PDA'], dual: true,
+    block: 'Left posterior fascicular block: right axis deviation with no other cause. Rare in isolation.',
+    note: 'A broad fan running to the posteromedial papillary muscle. Dual-supplied and physically larger, so it is the hardest fascicle to knock out.',
+  },
+];
+
+/* What the conduction system does when a given set of vessels loses flow.
+ * A dual-supplied part needs BOTH its arteries gone before it fails. */
+export function conductionState(deadIds = []) {
+  const dead = new Set(deadIds);
+  const out = [];
+  for (const part of CONDUCTION) {
+    const lost = part.supply.filter((v) => dead.has(v));
+    const failed = part.dual ? lost.length === part.supply.length : lost.length > 0;
+    out.push({ ...part, failed, lost });
+  }
+  return out;
+}
+
+// One line naming the rhythm or block that follows, for the readout.
+export function conductionSummary(deadIds = []) {
+  const failed = conductionState(deadIds).filter((p) => p.failed);
+  if (!failed.length) return null;
+  const ids = new Set(failed.map((p) => p.id));
+  if (ids.has('RBB') && ids.has('LAF')) {
+    return {
+      name: 'Bifascicular block (RBBB + left anterior fascicular block)',
+      detail: 'The right bundle and the left anterior fascicle share a single septal perforator supply, so they go together. New bifascicular block in an anterior MI means the occlusion is proximal to the first septal perforator, carries a large infarct, and threatens complete heart block that will not respond to atropine.',
+      parts: failed,
+    };
+  }
+  if (ids.has('HIS')) {
+    return { name: 'Infranodal (His) block', detail: 'Wide complex, atropine-unresponsive, and it will need pacing.', parts: failed };
+  }
+  if (ids.has('AVN') && ids.has('SAN')) {
+    return { name: 'Sinus and AV nodal ischaemia', detail: 'Bradycardia with AV block. Narrow complex and atropine-responsive, because the block is above the bundle of His, and it usually recovers with reperfusion.', parts: failed };
+  }
+  return { name: failed.map((p) => p.name).join(' + ') + ' ischaemia', detail: failed.map((p) => p.block).join(' '), parts: failed };
+}
+
+/* ------------------------------------------------------------------ *
+ * VALVE ANNULI
+ *
+ * Four rings in one fibrous skeleton. Sizes from CMR reference values: mitral
+ * 2.6-2.9 cm, tricuspid 2.9-3.2 cm — the tricuspid is the larger of the two,
+ * and it sits 5-8 mm apical to the mitral, the offset whose loss is Ebstein's.
+ * The aortic valve is the keystone, wedged between mitral and tricuspid and in
+ * direct fibrous continuity with the anterior mitral leaflet. The pulmonary
+ * valve is the odd one out: no fibrous continuity with anything, and it stands
+ * anterior and superior to all three, on the far side of the infundibulum.
+ * ------------------------------------------------------------------ */
+export const VALVES = [
+  {
+    id: 'mitral', name: 'mitral valve', leaflets: 2, r: 1.40,
+    c: [0.15, LV_TOP + 0.05, -0.10], normal: [-0.20, 1, 0.34],
+    note: 'Two leaflets, the anterior one in fibrous continuity with the aortic valve. Both papillary muscles pull on both leaflets through the chordae, which is why either muscle rupturing floods the whole valve.',
+  },
+  {
+    id: 'tricuspid', name: 'tricuspid valve', leaflets: 3, r: 1.55,
+    c: [-2.45, LV_TOP - 0.62, 0.35], normal: [0.22, 1, 0.20],
+    note: 'Larger than the mitral and set 5-8 mm closer to the apex. Its septal leaflet forms one side of the triangle of Koch, so the AV node lies immediately behind it.',
+  },
+  {
+    id: 'aortic', name: 'aortic valve', leaflets: 3, r: 1.18,
+    c: [-0.58, 3.18, -0.12], normal: [-0.10, 0.97, 0.20],
+    note: 'The keystone of the fibrous skeleton, wedged between the other three. The left bundle emerges just beneath its non-coronary cusp, and the coronary ostia open from its left and right sinuses.',
+  },
+  {
+    id: 'pulmonary', name: 'pulmonary valve', leaflets: 3, r: 1.12,
+    c: [0.42, 4.32, 1.05], normal: [0.28, 0.93, -0.24],
+    note: 'The most anterior and most superior of the four, carried up and away by the infundibulum. It has no fibrous continuity with any other valve, which is why it can be harvested whole for a Ross procedure.',
+  },
+];
+
+export const valveById = (id) => VALVES.find((v) => v.id === id);
 
 // Apex points left, inferior and anterior — the heart lying obliquely in the chest.
 export const APEX_DIR = [0.55, -0.72, 0.42];

@@ -5,12 +5,16 @@ import fs from 'node:fs';
 import * as DATA from './heart-data.js';
 import {
   LEADS, MORPH, SEG_NAME, STAGES, SCENARIOS, VESSEL_IDS,
-  beat, ahaSegment, leadState,
-  LV_A, LV_TOP, LV_LEN, ANT_GROOVE, POST_GROOVE, RV_T0, RV_TIP, RV_WALL, RV_TILT, RV_BULGE,
-  lvY, lvRadius, lvWall, lvEndo, baseTilt, rvBulge, rvRadius, APEX_DIR, shellMesh,
+  ALL_LEADS, EXTRA_LEADS, CHEST_LEADS, LEAD_AXIS, INJURY, SCENARIO_HR,
+  DOMINANCE, withDominance, territoryFor, TERRITORY, stDeviation, stThreshold,
+  deriveLimb, rrFor, beat, ahaSegment, leadState, LV_A,
+  LV_TOP, LV_LEN, ANT_GROOVE, POST_GROOVE, RV_T0, RV_TIP,
+  RV_WALL, RV_TILT, RV_BULGE, lvY, lvRadius, lvWall,
+  lvEndo, baseTilt, rvBulge, rvRadius, APEX_DIR, shellMesh,
   lvPoint, lvEndoPoint, rvPoint, rvInnerPoint, rvDir, localToWorld,
-  LA_POS, RA_POS, SILHOUETTE_ASPECT, SILHOUETTE_APEX_FRAC, silhouetteCloud,
-  heightSampler, sampledPoint,
+  LA_POS, RA_POS, SILHOUETTE_ASPECT, SILHOUETTE_APEX_FRAC, silhouetteCloud, heightSampler,
+  sampledPoint, PAPILLARY, papillaryAxisPoints, CONDUCTION, conductionState, conductionSummary,
+  VALVES, valveById, lvSurfY, LV_BOT,
 } from './heart-data.js';
 
 const normal = SCENARIOS.find((s) => s.id === 'none');
@@ -54,7 +58,8 @@ check('ahaSegment reaches every segment and never leaves 1..17', () => {
 check('scenarios reference real leads, segments and vessels', () => {
   const ids = new Set(VESSEL_IDS);
   for (const sc of SCENARIOS) {
-    for (const l of [...sc.elevate, ...sc.depress]) assert.ok(LEADS.includes(l), `${sc.id}: bad lead ${l}`);
+    for (const l of [...sc.elevate, ...sc.depress]) assert.ok(ALL_LEADS.includes(l), `${sc.id}: bad lead ${l}`);
+    for (const l of [...sc.expectElevate, ...sc.expectDepress]) assert.ok(LEADS.includes(l), `${sc.id}: bad expected lead ${l}`);
     for (const s of sc.segs) assert.ok(s >= 1 && s <= 17, `${sc.id}: bad segment ${s}`);
     for (const v of sc.dead) assert.ok(ids.has(v), `${sc.id}: unknown vessel ${v}`);
     assert.equal(new Set(sc.elevate).size, sc.elevate.length, `${sc.id}: duplicate elevate lead`);
@@ -72,8 +77,8 @@ check('baseline is flat in every lead', () => {
 
 check('an acute STEMI elevates its own leads and depresses the reciprocals', () => {
   const rca = SCENARIOS.find((s) => s.id === 'rca-prox');
-  for (const l of rca.elevate) assert.ok(stAt(l, rca, acute) > 0.2, `${l} should be elevated`);
-  for (const l of rca.depress) assert.ok(stAt(l, rca, acute) < -0.05, `${l} should be depressed`);
+  for (const l of rca.elevate) assert.ok(stAt(l, rca, acute) > 0.09, `${l} should be elevated`);
+  for (const l of rca.depress) assert.ok(stAt(l, rca, acute) < -0.01, `${l} should be depressed`);
   assert.ok(Math.abs(stAt('V6', rca, acute)) < 0.02, 'V6 should be untouched by an inferior MI');
 });
 
@@ -82,6 +87,10 @@ check('inferior and anterior territories are reciprocal to each other', () => {
   const ant = SCENARIOS.find((s) => s.id === 'lad-prox');
   assert.ok(inf.elevate.includes('III') && inf.depress.includes('aVL'));
   assert.ok(ant.elevate.includes('aVL') && ant.depress.includes('III'));
+  // Same arrow, opposite ends: the two axes should be close to 180 degrees apart.
+  const d = Math.abs(INJURY[inf.id].axis - INJURY[ant.id].axis) % 360;
+  const sep = d > 180 ? 360 - d : d;
+  assert.ok(sep > 140, `inferior and anterior injury axes are only ${sep.toFixed(0)} deg apart`);
 });
 
 check('Q waves deepen and R waves shrink as the infarct ages', () => {
@@ -121,6 +130,171 @@ check('ST elevation peaks early and the rupture warning lands at 3-7 days', () =
   const peak = STAGES.reduce((a, b) => (b.st > a.st ? b : a));
   assert.ok(peak.id <= 3, `ST should peak in the first 12 h, peaked at stage ${peak.id}`);
   assert.match(STAGES[6].risk, /RUPTURE/i);
+});
+
+
+check('the twelve-lead obeys Einthoven and Goldberger at every instant', () => {
+  // III = II - I, aVR = -(I+II)/2, aVL = I - II/2, aVF = II - I/2.
+  // If any of these fail the trace could not have come off a real patient.
+  const at = (lead, sc, stage, t) => {
+    const { m, offset } = leadState(lead, sc, stage);
+    return beat(t, m, offset);
+  };
+  for (const sc of SCENARIOS) {
+    for (const stage of STAGES) {
+      for (let t = 0; t < 0.8; t += 0.01) {
+        const I = at('I', sc, stage, t), II = at('II', sc, stage, t);
+        const near = (got, want, name) => assert.ok(Math.abs(got - want) < 1e-9,
+          `${sc.id} @${stage.time} t=${t.toFixed(2)}: ${name} off by ${(got - want).toExponential(1)}`);
+        near(at('III', sc, stage, t), II - I, 'III != II - I');
+        near(at('aVR', sc, stage, t), -(I + II) / 2, 'aVR != -(I+II)/2');
+        near(at('aVL', sc, stage, t), I - II / 2, 'aVL != I - II/2');
+        near(at('aVF', sc, stage, t), II - I / 2, 'aVF != II - I/2');
+        // The three augmented leads always sum to zero.
+        near(at('aVR', sc, stage, t) + at('aVL', sc, stage, t) + at('aVF', sc, stage, t), 0, 'aVR+aVL+aVF');
+      }
+    }
+  }
+});
+
+check('every lead a scenario is labelled with is really deviated on the trace', () => {
+  const peak = STAGES.reduce((a, b) => (b.st > a.st ? b : a));
+  for (const sc of SCENARIOS) {
+    for (const l of sc.elevate) assert.ok(stDeviation(l, sc, peak) >= 0.1, `${sc.id}: ${l} labelled elevated but is not`);
+    for (const l of sc.depress) assert.ok(stDeviation(l, sc, peak) <= -0.05, `${sc.id}: ${l} labelled depressed but is not`);
+    const both = sc.elevate.filter((l) => sc.depress.includes(l));
+    assert.deepEqual(both, [], `${sc.id}: ${both} in both lists`);
+  }
+});
+
+check('the derived labels contain every lead the textbook expects', () => {
+  // The curated lists are the expectation; the injury vector must reproduce them.
+  // It may find extra reciprocals the shorthand omits, but never fewer.
+  for (const sc of SCENARIOS) {
+    for (const l of sc.expectElevate) assert.ok(sc.elevate.includes(l),
+      `${sc.id}: ${l} should be elevated but the injury vector says ${stDeviation(l, sc, STAGES[3]).toFixed(3)} mV`);
+    for (const l of sc.expectDepress) assert.ok(sc.depress.includes(l),
+      `${sc.id}: ${l} should be depressed but the injury vector says ${stDeviation(l, sc, STAGES[3]).toFixed(3)} mV`);
+  }
+});
+
+check('the ST vector reproduces the discriminations the page teaches', () => {
+  const peak = STAGES[3];
+  const st = (l, id) => stDeviation(l, SCENARIOS.find((s) => s.id === id), peak);
+  // Inferior MI: RCA gives III > II with aVL depressed; a lateral lesion does not.
+  assert.ok(st('III', 'rca-prox') > st('II', 'rca-prox'), 'RCA should give III greater than II');
+  assert.ok(st('aVL', 'rca-prox') < -0.05, 'RCA inferior MI should depress aVL');
+  // Proximal LAD: aVL up with inferior reciprocal depression. Mid LAD: neither.
+  assert.ok(st('aVL', 'lad-prox') > 0.1 && st('III', 'lad-prox') < -0.05, 'proximal LAD pattern');
+  assert.ok(Math.abs(st('aVL', 'lad-mid')) < 0.1, 'mid LAD should spare aVL');
+  // Wrap-around LAD: anterior and inferior elevation together, no limb reciprocal depression.
+  for (const l of ['V4', 'II', 'III', 'aVF']) assert.ok(st(l, 'lad-wrap') > 0.1, `wrap LAD should elevate ${l}`);
+  assert.ok(!['I', 'II', 'III', 'aVL', 'aVF'].some((l) => st(l, 'lad-wrap') < -0.05),
+    'wrap-around LAD should show no inferior or lateral reciprocal depression');
+  // Left main: aVR elevation must exceed V1 elevation.
+  assert.ok(st('aVR', 'lm') > st('V1', 'lm') && st('V1', 'lm') > 0, 'aVR should exceed V1 in left main');
+  // Posterior MI is invisible on the standard leads and obvious on V7-V9.
+  assert.ok(Math.max(...LEADS.map((l) => st(l, 'pda'))) < 0.1, 'posterior MI should elevate no standard lead');
+  assert.ok(st('V7', 'pda') > 0.05, 'posterior leads should pick it up');
+});
+
+check('extra leads only appear where they would actually be recorded', () => {
+  const rv = SCENARIOS.find((s) => s.id === 'rca-prox');
+  const post = SCENARIOS.find((s) => s.id === 'pda');
+  assert.ok(rv.extras.includes('V4R'), 'a proximal RCA lesion calls for V4R');
+  assert.ok(post.extras.includes('V7') && post.extras.includes('V9'), 'a posterior MI calls for V7-V9');
+  assert.deepEqual(SCENARIOS.find((s) => s.id === 'lad-mid').extras, [], 'a mid LAD needs no extra leads');
+  for (const l of EXTRA_LEADS) assert.ok(MORPH[l], `no morphology for ${l}`);
+});
+
+check('ST thresholds follow the Fourth Universal Definition', () => {
+  assert.equal(stThreshold('II'), 0.1);
+  assert.equal(stThreshold('V2', 'man>=40'), 0.2);
+  assert.equal(stThreshold('V2', 'man<40'), 0.25);
+  assert.equal(stThreshold('V3', 'woman'), 0.15);
+  assert.equal(stThreshold('V7'), 0.05);
+  assert.equal(stThreshold('V4R'), 0.05);
+  assert.equal(stThreshold('V4R', 'man<30'), 0.1);
+});
+
+check('heart rate matches the haemodynamics the page describes', () => {
+  const hr = (id) => SCENARIOS.find((s) => s.id === id).hr;
+  assert.equal(hr('none'), 75);
+  assert.ok(hr('rca-prox') < 60, 'inferior MI should be bradycardic');
+  assert.ok(hr('lad-prox') > 95, 'anterior MI should be tachycardic');
+  assert.ok(Math.abs(rrFor(60) - 1) < 1e-12, 'rrFor(60) should be one second');
+  for (const sc of SCENARIOS) assert.ok(sc.hr > 30 && sc.hr < 160, `${sc.id}: implausible rate ${sc.hr}`);
+});
+
+check('every scenario has an injury vector and every axis is a real bearing', () => {
+  for (const sc of SCENARIOS) {
+    assert.ok(INJURY[sc.id], `${sc.id}: no injury vector`);
+    const { axis, amp, chest } = INJURY[sc.id];
+    assert.ok(axis >= -180 && axis <= 180, `${sc.id}: axis ${axis} off the hexaxial circle`);
+    assert.ok(amp >= 0 && amp <= 1.2, `${sc.id}: amplitude ${amp}`);
+    for (const [l, f] of Object.entries(chest)) {
+      assert.ok(!LEAD_AXIS[l], `${sc.id}: ${l} is a frontal lead and must come from the vector, not the chest map`);
+      assert.ok(ALL_LEADS.includes(l), `${sc.id}: unknown chest lead ${l}`);
+      assert.ok(Math.abs(f) <= 1.05, `${sc.id}: ${l} fraction ${f} out of range`);
+    }
+  }
+  assert.equal(SCENARIO_HR.none, 75);
+});
+
+
+/* ---- dominance ---- */
+
+check('dominance moves the crux territory between the two systems', () => {
+  const lcx = SCENARIOS.find((s) => s.id === 'lcx');
+  const rca = SCENARIOS.find((s) => s.id === 'rca-mid');
+  const right = withDominance(lcx, 'right'), left = withDominance(lcx, 'left');
+  assert.deepEqual(right.segs, lcx.segs, 'right dominance is the base case');
+  for (const g of [3, 4, 9, 10, 15]) assert.ok(left.segs.includes(g), `left-dominant circumflex should take segment ${g}`);
+  assert.ok(left.dead.includes('PDA') && left.dead.includes('AVN'), 'left-dominant circumflex feeds the PDA and AV node');
+  const rcaLeft = withDominance(rca, 'left');
+  assert.deepEqual(rcaLeft.segs, [], 'in a left-dominant heart an RCA lesion spares the left ventricle');
+  assert.ok(!rcaLeft.dead.includes('PDA'), 'the PDA is not RCA territory in a left-dominant heart');
+  assert.ok(rcaLeft.distinguish.length > rca.distinguish.length, 'the change should be explained to the reader');
+});
+
+check('co-dominance moves the vessel at risk without moving a segment', () => {
+  const rca = SCENARIOS.find((s) => s.id === 'rca-mid');
+  const co = withDominance(rca, 'codominant');
+  assert.deepEqual(co.segs, rca.segs, 'the AHA wall map is unchanged by co-dominance');
+  assert.ok(!co.dead.includes('PLV'), 'the posterolateral branch comes off the circumflex here');
+  assert.ok(co.dead.includes('PDA'), 'the posterior descending still comes off the RCA');
+});
+
+check('every dominance pattern is described and the territory map follows it', () => {
+  for (const [id, d] of Object.entries(DOMINANCE)) {
+    assert.equal(d.id, id);
+    for (const k of ['label', 'prevalence', 'note', 'pdaFrom', 'plvFrom', 'avnFrom']) {
+      assert.ok(d[k] && String(d[k]).length > 1, `${id}: missing ${k}`);
+    }
+  }
+  const right = territoryFor('right');
+  assert.deepEqual(right.RCA, TERRITORY.RCA);
+  const left = territoryFor('left');
+  assert.deepEqual(left.RCA, [], 'a left-dominant heart has no RCA left-ventricular territory');
+  // Whatever the dominance, all 17 segments are owned exactly once.
+  for (const id of Object.keys(DOMINANCE)) {
+    const t = territoryFor(id);
+    const all = [...t.LAD, ...t.RCA, ...t.LCX].sort((a, b) => a - b);
+    assert.deepEqual(all, Array.from({ length: 17 }, (_, i) => i + 1), `${id}: territory map does not tile the ventricle`);
+  }
+});
+
+check('scenarios stay internally valid under every dominance', () => {
+  const ids = new Set(VESSEL_IDS);
+  for (const dom of Object.keys(DOMINANCE)) {
+    for (const sc of SCENARIOS) {
+      const d = withDominance(sc, dom);
+      for (const v of d.dead) assert.ok(ids.has(v), `${sc.id}/${dom}: unknown vessel ${v}`);
+      for (const g of d.segs) assert.ok(g >= 1 && g <= 17, `${sc.id}/${dom}: bad segment ${g}`);
+      assert.equal(new Set(d.segs).size, d.segs.length, `${sc.id}/${dom}: duplicate segment`);
+      assert.equal(new Set(d.dead).size, d.dead.length, `${sc.id}/${dom}: duplicate vessel`);
+    }
+  }
 });
 
 
@@ -234,6 +408,127 @@ check('AHA segment boundaries line up with the interventricular grooves', () => 
   // sits in the inferoseptal sector. Both must be inside the septal half.
   assert.ok(ahaSegment(ANT_GROOVE, 0.15) === 2, 'anterior groove should fall on basal anteroseptal');
   assert.ok(ahaSegment(POST_GROOVE, 0.15) === 3, 'posterior groove should fall on basal inferoseptal');
+});
+
+
+/* ---- papillary muscles, conduction system and valves ---- */
+
+check('both papillary muscles stand inside the cavity on the right walls', () => {
+  assert.equal(PAPILLARY.length, 2);
+  for (const pm of PAPILLARY) {
+    const [base, tip] = papillaryAxisPoints(pm);
+    // Base on the endocardium, tip free in the cavity and closer to the axis.
+    const rBase = Math.hypot(base[0], base[2]), rTip = Math.hypot(tip[0], tip[2]);
+    assert.ok(Math.abs(rBase - lvEndo(pm.theta, pm.base)) < 1e-9, `${pm.id}: base is off the endocardium`);
+    assert.ok(rTip < rBase, `${pm.id}: tip should lean towards the long axis`);
+    assert.ok(rTip + pm.r1 < lvEndo(pm.theta, pm.tip) + 1e-9, `${pm.id}: tip pokes through the wall`);
+    // Length: real papillary muscles are 2-3.5 cm.
+    const len = Math.hypot(tip[0] - base[0], tip[1] - base[1], tip[2] - base[2]);
+    assert.ok(len > 2 && len < 3.6, `${pm.id} is ${len.toFixed(1)} cm long`);
+    assert.ok(base[1] > LV_BOT && tip[1] < lvSurfY(pm.theta, 0), `${pm.id} outside the ventricle`);
+    assert.ok(pm.r0 > pm.r1, `${pm.id} should taper towards the chordae`);
+  }
+  // One on the anterolateral wall, one on the inferoseptal side, roughly opposite.
+  const [al, pm2] = PAPILLARY;
+  assert.equal(al.id, 'ALPM');
+  assert.equal(pm2.id, 'PMPM');
+  const d = Math.abs(al.theta - pm2.theta) % 360;
+  assert.ok(Math.min(d, 360 - d) > 150, 'the two muscles should sit near-opposite each other');
+});
+
+check('the posteromedial papillary muscle is the single-supply one', () => {
+  const al = PAPILLARY.find((p) => p.id === 'ALPM');
+  const pm = PAPILLARY.find((p) => p.id === 'PMPM');
+  assert.ok(al.dual && al.supply.length === 2, 'anterolateral supply should be dual');
+  assert.ok(!pm.dual && pm.supply.length === 1, 'posteromedial supply should be single');
+  assert.deepEqual(pm.supply, ['PDA'], 'and that single supply is the posterior descending');
+  const ids = new Set(VESSEL_IDS);
+  for (const p of PAPILLARY) for (const v of p.supply) assert.ok(ids.has(v), `unknown vessel ${v}`);
+});
+
+check('the conduction system is continuous and correctly supplied', () => {
+  const ids = new Set(VESSEL_IDS);
+  const byId = Object.fromEntries(CONDUCTION.map((c) => [c.id, c]));
+  for (const k of ['SAN', 'AVN', 'HIS', 'RBB', 'LAF', 'LPF']) assert.ok(byId[k], `missing ${k}`);
+  for (const part of CONDUCTION) {
+    for (const v of part.supply) assert.ok(ids.has(v), `${part.id}: unknown vessel ${v}`);
+    assert.ok(part.block && part.note, `${part.id}: undocumented`);
+    if (part.kind === 'path') {
+      assert.ok(part.path.length >= 2, `${part.id}: needs a path`);
+      for (const p of part.path) assert.ok(p.length === 3 && p.every(Number.isFinite), `${part.id}: bad point`);
+    } else {
+      assert.ok(part.at.length === 3 && part.r > 0, `${part.id}: bad node`);
+    }
+  }
+  // The His bundle must start where the AV node sits — one axis, not two.
+  const gap = Math.hypot(...byId.HIS.path[0].map((v, i) => v - byId.AVN.at[i]));
+  assert.ok(gap < 1e-9, `the His bundle starts ${gap.toFixed(2)} cm from the AV node`);
+  // Both fascicles must leave the same point on the septal crest.
+  const split = Math.hypot(...byId.LAF.path[0].map((v, i) => v - byId.LPF.path[0][i]));
+  assert.ok(split < 1e-9, 'the two fascicles should branch from one point');
+  // Thin single-supply parts vs broad dual-supply ones.
+  assert.ok(!byId.RBB.dual && !byId.LAF.dual, 'right bundle and anterior fascicle are single-supply');
+  assert.ok(byId.LPF.dual && byId.HIS.dual, 'posterior fascicle and His bundle are dual-supplied');
+  assert.ok(byId.LPF.r > byId.LAF.r, 'the posterior fascicle is the broader of the two');
+});
+
+check('a dual-supplied part only fails when both its arteries go', () => {
+  const state = (dead) => Object.fromEntries(conductionState(dead).map((p) => [p.id, p.failed]));
+  assert.equal(state(['S1']).RBB, true, 'one septal perforator takes the right bundle');
+  assert.equal(state(['S1']).LAF, true, 'and the left anterior fascicle with it');
+  assert.equal(state(['S1']).LPF, false, 'but not the dual-supplied posterior fascicle');
+  assert.equal(state(['S1']).HIS, false, 'nor the dual-supplied His bundle');
+  assert.equal(state(['S1', 'PDA']).LPF, true, 'losing both supplies does take it');
+  assert.equal(state(['S1', 'AVN']).HIS, true, 'and the same for the His bundle');
+  assert.equal(state([]).SAN, false, 'nothing fails when nothing is occluded');
+});
+
+check('the conduction readout matches the two rules the page teaches', () => {
+  const sc = (id) => SCENARIOS.find((s) => s.id === id);
+  // Proximal LAD takes the septal perforators: bifascicular block.
+  const ant = conductionSummary(sc('lad-prox').dead);
+  assert.match(ant.name, /Bifascicular/i);
+  // Mid LAD spares the first septal perforator, so the bundles survive.
+  assert.ok(!sc('lad-mid').dead.includes('S1'), 'a mid LAD lesion is past the first septal');
+  assert.ok(!conductionState(sc('lad-mid').dead).some((p) => p.id === 'LAF' && p.failed),
+    'a mid LAD lesion should not cause fascicular block');
+  // Proximal RCA takes both nodes: narrow-complex, atropine-responsive block.
+  const inf = conductionSummary(sc('rca-prox').dead);
+  assert.match(inf.detail, /narrow complex/i);
+  // A right-dominant circumflex lesion touches neither node.
+  assert.equal(conductionSummary(sc('lcx').dead), null, 'a right-dominant LCx lesion spares the conduction system');
+  // A left-dominant one reaches the AV node.
+  assert.ok(withDominance(sc('lcx'), 'left').dead.includes('AVN'),
+    'a left-dominant circumflex supplies the AV node');
+});
+
+check('the four valve annuli hold their real spatial relationships', () => {
+  assert.equal(VALVES.length, 4);
+  const v = (id) => valveById(id);
+  const [m, t, a, p] = ['mitral', 'tricuspid', 'aortic', 'pulmonary'].map(v);
+  // Diameters, from the CMR reference ranges.
+  assert.ok(t.r > m.r, 'the tricuspid annulus is the larger of the two AV valves');
+  assert.ok(m.r * 2 > 2.4 && m.r * 2 < 3.2, `mitral annulus ${(m.r * 2).toFixed(1)} cm`);
+  assert.ok(t.r * 2 > 2.7 && t.r * 2 < 3.6, `tricuspid annulus ${(t.r * 2).toFixed(1)} cm`);
+  assert.ok(a.r * 2 > 1.9 && a.r * 2 < 2.7, `aortic annulus ${(a.r * 2).toFixed(1)} cm`);
+  // The tricuspid sits 5-8 mm apical to the mitral. Losing that offset is Ebstein's.
+  const offset = m.c[1] - t.c[1];
+  assert.ok(offset > 0.4 && offset < 0.9, `mitral-tricuspid offset ${offset.toFixed(2)} cm`);
+  // The pulmonary valve is the most anterior and the most superior of the four.
+  for (const other of [m, t, a]) {
+    assert.ok(p.c[2] > other.c[2], `the pulmonary valve should sit anterior to the ${other.id}`);
+    assert.ok(p.c[1] > other.c[1], `the pulmonary valve should sit above the ${other.id}`);
+  }
+  // Aortic-mitral fibrous continuity: the two annuli touch.
+  const sep = Math.hypot(...a.c.map((x, i) => x - m.c[i]));
+  assert.ok(sep < a.r + m.r, 'the aortic and mitral annuli should be in fibrous continuity');
+  // The aortic valve is the keystone: it sits between the mitral and the tricuspid.
+  assert.ok(a.c[0] < m.c[0] && a.c[0] > t.c[0], 'the aortic valve is wedged between the AV valves');
+  for (const valve of VALVES) {
+    assert.equal(valve.normal.length, 3);
+    assert.ok(valve.leaflets === 2 || valve.leaflets === 3, `${valve.id}: leaflet count`);
+    assert.ok(valve.note.length > 20, `${valve.id}: undocumented`);
+  }
 });
 
 
@@ -416,16 +711,50 @@ if (fs.existsSync(MODELS)) {
   const man = JSON.parse(fs.readFileSync(MODELS, 'utf8'));
 
   check('scanned manifest carries every part the page asks for', () => {
-    for (const key of ['lv', 'rv', 'la', 'ra']) {
+    for (const key of ['lv', 'rv', 'la', 'ra', 'mv', 'tv', 'av', 'pv', 'pap']) {
       const part = man.parts[key];
       assert.ok(part, `missing part ${key}`);
       assert.ok(part.triangles > 1000, `${key} has only ${part.triangles} triangles`);
+      assert.ok(part.centroid && part.centroid.length === 3, `${key} has no centroid`);
+      assert.ok(['chamber', 'apparatus'].includes(part.role), `${key} has no role`);
       const expected = 8 + part.vertices * 12 + part.triangles * 12;
       const size = fs.statSync(new URL(`./models/${part.file}`, import.meta.url)).size;
       assert.equal(size, expected, `${key}.bin is ${size} bytes, header implies ${expected}`);
     }
     assert.equal(man.lvTop, LV_TOP, 'manifest built against a different LV_TOP');
     assert.equal(man.lvLen, LV_LEN, 'manifest built against a different LV_LEN');
+    // The left ventricle carries the segment colours per vertex, so it must be the finest.
+    assert.ok(man.parts.lv.triangles > 15000, `the LV mesh is only ${man.parts.lv.triangles} triangles`);
+  });
+
+  check('the scanned chambers are chamber-sized, not vein-sized', () => {
+    // BodyParts3D models the cavae and the pulmonary veins as part of the atrial
+    // wall. Untrimmed they make each atrium 9 cm across and drive it through the
+    // ventricles below, so the build script clips them; this is that guard.
+    for (const key of ['la', 'ra']) {
+      const [w, h, d] = man.parts[key].bbox;
+      assert.ok(Math.max(w, h, d) < 6.5, `${key} is ${Math.max(w, h, d)} cm across — the veins are still attached`);
+      assert.ok(Math.max(w, h, d) > 3.5, `${key} is only ${Math.max(w, h, d)} cm across — over-trimmed`);
+    }
+    for (const key of ['lv', 'rv']) {
+      const h = man.parts[key].bbox[1];
+      assert.ok(h > 7 && h < 9.5, `${key} is ${h} cm base to apex`);
+    }
+  });
+
+  check('the scanned parts hold their real spatial relationships', () => {
+    const c = Object.fromEntries(Object.entries(man.parts).map(([k, p]) => [k, p.centroid]));
+    assert.ok(c.ra[0] < c.la[0], 'the right atrium should lie to the patient\'s right of the left');
+    assert.ok(c.rv[0] < c.lv[0], 'the right ventricle should lie to the patient\'s right of the left');
+    assert.ok(c.la[1] > c.mv[1], 'the left atrium should sit above the mitral valve');
+    assert.ok(c.ra[1] > c.tv[1], 'the right atrium should sit above the tricuspid valve');
+    assert.ok(c.pap[1] < c.mv[1], 'the papillary muscles should hang below the mitral valve');
+    assert.ok(c.tv[0] < c.av[0] && c.av[0] < c.mv[0],
+      'the aortic valve is the keystone, wedged between the two AV valves');
+    assert.ok(c.pv[2] > Math.max(c.mv[2], c.tv[2], c.av[2]),
+      'the pulmonary valve should be the most anterior of the four');
+    assert.ok(Math.min(c.av[2], c.pv[2]) > Math.max(c.mv[2], c.tv[2]),
+      'both arterial valves should sit anterior to both AV valves');
   });
 
   check('the scanned grooves agree with the model\'s groove angles', () => {

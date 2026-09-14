@@ -266,3 +266,23 @@ thead th {
 }
 tbody tr:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
 td code, th code { font-size: .85em; background: var(--accent-soft); padding: .05rem .3rem; border-radius: 3px; }
+
+/* Measured ST deviation, read off the trace at the J point. Bold = clears the
+   diagnostic threshold for that lead. */
+.st-measure { display: flex; flex-wrap: wrap; gap: .3rem; align-items: baseline; }
+.st-measure-label {
+  font-size: .7rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--muted); margin-right: .2rem;
+}
+.st-chip {
+  font-size: .76rem; font-variant-numeric: tabular-nums; padding: .1rem .38rem;
+  border-radius: 4px; border: 1px solid currentColor; opacity: .72; white-space: nowrap;
+}
+.st-chip.up { color: #c0392b; }
+.st-chip.down { color: #2f6fd0; }
+.st-chip.is-sig { opacity: 1; font-weight: 700; border-width: 1.5px; }
+
+#panel-conduction abbr, .lesion abbr {
+  text-decoration: underline dotted; text-underline-offset: 2px; cursor: help;
+}
+.lesion dd abbr { font-variant-numeric: tabular-nums; }

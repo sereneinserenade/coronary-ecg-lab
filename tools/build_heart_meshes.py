@@ -26,12 +26,48 @@ OUT = os.path.join(ROOT, "models")
 LV_TOP, LV_BOT = 2.7, -6.0
 LV_LEN = LV_TOP - LV_BOT
 
+# BodyParts3D decomposes each chamber into a blood-pool cavity, a wall region, the
+# valve leaflets hinged on it and (for the ventricles) the papillary muscles. The
+# "part of" relation shares the leaflets between the chamber above and the chamber
+# below, so collecting every element of FMA7097 silently welds the mitral valve and
+# a sprawling wall region onto the left atrium. Name the elements instead.
+#
+#   FJ2422/FJ2423/FJ2425/FJ2424  cavity of LV / RV / LA / RA
+#   FJ2438/FJ2439                wall region of LA / RA
+#   FJ2420 FJ2432                mitral leaflets, anterior and posterior
+#   FJ2421 FJ2433 FJ2436         tricuspid leaflets, anterior, posterior, septal
+#   FJ2426 FJ2431 FJ2435         aortic cusps
+#   FJ2417 FJ2427 FJ2434         pulmonary cusps
+#   FJ2418 FJ2429                LV papillary muscles (lateral, and the other group)
+#   FJ2419 FJ2430 FJ2437         RV papillary muscles
+#
+# `trim` clips the tubular venous extensions off an atrium: the cavae and the
+# pulmonary veins are modelled as part of the atrial wall, and left in place they
+# make each atrium 9 cm across and drive it straight through the ventricles below.
 STRUCTURES = {
-    "lv": ("FMA7101", "left ventricle"),
-    "rv": ("FMA7098", "right ventricle"),
-    "la": ("FMA7097", "left atrium"),
-    "ra": ("FMA7096", "right atrium"),
+    "lv": {"label": "left ventricle", "elements": ["FJ2422"], "subdivide": 2},
+    "rv": {"label": "right ventricle", "elements": ["FJ2423"], "subdivide": 1},
+    "la": {"label": "left atrium", "elements": ["FJ2438"], "trim": 2.9, "anchor": "mv", "lift": 2.2},
+    "ra": {"label": "right atrium", "elements": ["FJ2439"], "trim": 3.2, "anchor": "tv", "lift": 2.4},
+    "mv": {"label": "mitral valve", "elements": ["FJ2420", "FJ2432"]},
+    "tv": {"label": "tricuspid valve", "elements": ["FJ2421", "FJ2433", "FJ2436"]},
+    "av": {"label": "aortic valve", "elements": ["FJ2426", "FJ2431", "FJ2435"]},
+    "pv": {"label": "pulmonary valve", "elements": ["FJ2417", "FJ2427", "FJ2434"]},
+    "pap": {"label": "papillary muscles", "elements": ["FJ2418", "FJ2429", "FJ2419", "FJ2430", "FJ2437"]},
 }
+
+# Which parts the page renders as chamber walls, and which as internal apparatus.
+CHAMBERS = ["lv", "rv", "la", "ra"]
+
+# The frame is fitted to the WHOLE left ventricle — cavity, leaflets and papillary
+# muscles together — not to the cavity element alone. The cavity on its own is a
+# coarse mesh whose two ends are nearly the same width, and the base-versus-apex
+# test then picks the wrong end and rotates the entire model.
+REGISTRATION = ("FMA7101", "left ventricle (all parts)")
+# The septal direction comes from the right ventricle, and for the same reason it
+# must be the whole chamber: the cavity element alone sits off-centre and rotates
+# the frame about the long axis, which walks both interventricular grooves.
+REGISTRATION_RV = ("FMA7098", "right ventricle (all parts)")
 
 # Landmarks, not rendered. The two interventricular arteries mark the two grooves,
 # which is what fixes the anterior direction — the chamber centroids cannot, because
@@ -165,6 +201,46 @@ def decimate(verts, faces, cell):
         out_f.append(t)
     return out_v, out_f
 
+def subdivide(verts, faces, levels=1):
+    """Midpoint subdivision. The ventricular cavity meshes are coarse in the source,
+    and the left ventricle carries the AHA segment colours per vertex — at 1700
+    triangles the territory borders come out visibly faceted."""
+    for _ in range(levels):
+        out_v = list(verts)
+        mid = {}
+        def midpoint(a, b):
+            key = (a, b) if a < b else (b, a)
+            if key not in mid:
+                mid[key] = len(out_v)
+                out_v.append([(verts[a][i] + verts[b][i]) / 2 for i in range(3)])
+            return mid[key]
+        out_f = []
+        for a, b, c in faces:
+            ab, bc, ca = midpoint(a, b), midpoint(b, c), midpoint(c, a)
+            out_f += [(a, ab, ca), (ab, b, bc), (ca, bc, c), (ab, bc, ca)]
+        verts, faces = out_v, out_f
+    return verts, faces
+
+
+def trim_to(verts, faces, centre, radius):
+    """Clip the venous trunks off an atrium, keeping the chamber body.
+
+    Each atrium's wall region in BodyParts3D runs on into the cavae or the
+    pulmonary veins, which makes the raw mesh 9 cm across and drives it through the
+    ventricles below. The chamber is a blob and the veins are tubes leaving it, so
+    a radius cut separates them — but the centre has to be anchored, not found from
+    the mesh, because a trimmed mean happily settles on the appendage or a venous
+    confluence instead. Each atrium sits directly above its own AV valve, so that
+    valve is the anchor. Works in local (cardiac-frame) centimetres.
+    """
+    keep = [i for i, p in enumerate(verts) if math.dist(p, centre) <= radius]
+    keepset = set(keep)
+    remap = {v: i for i, v in enumerate(keep)}
+    out_v = [verts[i] for i in keep]
+    out_f = [tuple(remap[i] for i in f) for f in faces if all(i in keepset for i in f)]
+    return out_v, out_f
+
+
 def height_map(verts, n_theta=48, n_t=32):
     """R(theta, t) for the epicardial surface, so procedural vessels can hug the real shape."""
     grid = [[0.0] * n_theta for _ in range(n_t)]
@@ -207,17 +283,36 @@ def main():
         if len(cols) >= 3:
             elements[cols[0]].append(cols[2])
 
+    # Fit the cardiac frame to the full left ventricle before emitting anything.
+    reg_v, reg_f = [], []
+    for fj in elements[REGISTRATION[0]]:
+        if fj in index:
+            parse_obj(element_obj(fj, index), reg_v, reg_f)
+    reg_rv = []
+    for fj in elements[REGISTRATION_RV[0]]:
+        if fj in index:
+            parse_obj(element_obj(fj, index), reg_rv, [])
+    print(f"  frame fitted to {REGISTRATION[1]}: {len(reg_v)} verts, "
+          f"septal direction from {REGISTRATION_RV[1]}: {len(reg_rv)} verts")
+
     raw = {}
-    for key, (fma, label) in STRUCTURES.items():
+    for key, spec in STRUCTURES.items():
         verts, faces = [], []
-        for fj in elements[fma]:
+        missing = []
+        for fj in spec["elements"]:
             if fj in index:
                 parse_obj(element_obj(fj, index), verts, faces)
+            else:
+                missing.append(fj)
+        if missing:
+            sys.exit(f"{key}: element(s) {missing} are not in the archive")
+        if not verts:
+            sys.exit(f"{key}: no geometry")
         raw[key] = (verts, faces)
-        print(f"  {label:16s} {len(elements[fma]):2d} elements -> {len(verts):6d} verts {len(faces):6d} faces")
+        print(f"  {spec['label']:18s} {len(spec['elements']):2d} elements -> {len(verts):6d} verts {len(faces):6d} faces")
 
     # --- register into the cardiac frame -------------------------------
-    lv_v = raw["lv"][0]
+    lv_v = reg_v
     lv_c = centroid(lv_v)
     axis = principal_axis(lv_v, lv_c)
     proj = sorted(dot(sub(p, lv_c), axis) for p in lv_v)
@@ -241,7 +336,7 @@ def main():
           f"end vs {min(at_hi, at_lo):.1f} mm at the apex")
 
     scale = LV_LEN / span                                    # uniform: keeps real proportions
-    rv_c = centroid(raw["rv"][0])
+    rv_c = centroid(reg_rv)
     septal = perpendicular(sub(rv_c, lv_c), up)              # RV sits septal to the LV
     X = [-c for c in septal]                                 # +x is the LV free wall, patient's left
     Y = up
@@ -274,9 +369,50 @@ def main():
           f"(model uses {122} for the anterior groove)")
     print(f"  check  PDA centroid z={pda_l[2]:+.2f} cm, theta={ang(pda_l):.0f} deg "
           f"(model uses {232} for the posterior groove)")
-    for key, want in (("la", "z<0 posterior"), ("ra", "x<0 patient's right")):
-        c = to_local(centroid(raw[key][0]))
-        print(f"  check  {key.upper()} centroid x={c[0]:+.2f} y={c[1]:+.2f} z={c[2]:+.2f} cm  ({want})")
+    # Everything is measured and written in the cardiac frame from here on.
+    local = {k: ([to_local(p) for p in v], f) for k, (v, f) in raw.items()}
+
+    # Trim the venous trunks off the atria, anchoring on the valve each sits above.
+    for key, spec in STRUCTURES.items():
+        if "trim" not in spec:
+            continue
+        anchor = centroid(local[spec["anchor"]][0])
+        centre = [anchor[0], anchor[1] + spec["lift"], anchor[2]]
+        before = len(local[key][0])
+        local[key] = trim_to(local[key][0], local[key][1], centre, spec["trim"])
+        print(f"  trimmed {spec['label']}: {before} -> {len(local[key][0])} verts, "
+              f"within {spec['trim']} cm of a point {spec['lift']} cm above the {spec['anchor'].upper()}")
+        if len(local[key][0]) < 200:
+            sys.exit(f"{key}: the trim left only {len(local[key][0])} vertices")
+
+    for k in STRUCTURES:
+        c = centroid(local[k][0])
+        print(f"  part {k:4s} centroid x={c[0]:+.2f} y={c[1]:+.2f} z={c[2]:+.2f} cm")
+    for label, got, want in (("anterior", ang(lad_l), 122), ("posterior", ang(pda_l), 232)):
+        if abs(got - want) > 10:
+            sys.exit(f"registration failed: {label} groove at {got:.0f} deg, model uses {want}")
+
+    # Relationships that must hold whatever the dataset, checked in the cardiac frame.
+    c = {k: centroid(local[k][0]) for k in STRUCTURES}
+    for want, ok in (
+        ("the right atrium lies to the patient's right of the left", c["ra"][0] < c["la"][0]),
+        ("each atrium sits above its own AV valve", c["la"][1] > c["mv"][1] and c["ra"][1] > c["tv"][1]),
+        ("the papillary muscles hang below the mitral valve", c["pap"][1] < c["mv"][1]),
+        ("the pulmonary valve is the most anterior of the four",
+         c["pv"][2] > max(c["mv"][2], c["tv"][2], c["av"][2])),
+        # The keystone relationship: the aortic valve is wedged between the two AV valves.
+        ("the aortic valve sits between the mitral and the tricuspid",
+         c["tv"][0] < c["av"][0] < c["mv"][0]),
+        ("both arterial valves sit anterior to both AV valves",
+         min(c["av"][2], c["pv"][2]) > max(c["mv"][2], c["tv"][2])),
+        ("the right ventricle lies to the patient's right of the left", c["rv"][0] < c["lv"][0]),
+        ("each atrium is chamber-sized after the trim",
+         all(max(p[i] for p in local[k][0]) - min(p[i] for p in local[k][0]) < 6.5
+             for k in ("la", "ra") for i in range(3))),
+    ):
+        print(f"  check  {want}: {'ok' if ok else 'WRONG'}")
+        if not ok:
+            sys.exit(f"registration failed: not true that {want}")
 
     os.makedirs(OUT, exist_ok=True)
     manifest = {
@@ -288,10 +424,12 @@ def main():
         "grooves": {"anterior": round(ang(lad_l), 1), "posterior": round(ang(pda_l), 1)},
         "parts": {},
     }
-    for key, (verts, faces) in raw.items():
-        local = [to_local(p) for p in verts]
-        cell = 0.13 if key in ("lv", "rv") else 0.18
-        dv, df = decimate(local, faces, cell)
+    for key, (verts, faces) in local.items():
+        if STRUCTURES[key].get("subdivide"):
+            verts, faces = subdivide(verts, faces, STRUCTURES[key]["subdivide"])
+        # The left ventricle carries per-vertex segment colours, so it is kept finest.
+        cell = {"lv": 0.06, "rv": 0.10}.get(key, 0.09 if key not in CHAMBERS else 0.15)
+        dv, df = decimate(verts, faces, cell)
         with open(os.path.join(OUT, f"{key}.bin"), "wb") as f:
             f.write(struct.pack("<II", len(dv), len(df)))
             for p in dv:
@@ -300,9 +438,11 @@ def main():
                 f.write(struct.pack("<III", *t))
         xs = [p[0] for p in dv]; ys = [p[1] for p in dv]; zs = [p[2] for p in dv]
         manifest["parts"][key] = {
-            "label": STRUCTURES[key][1], "file": f"{key}.bin",
+            "label": STRUCTURES[key]["label"], "file": f"{key}.bin",
+            "role": "chamber" if key in CHAMBERS else "apparatus",
             "vertices": len(dv), "triangles": len(df),
             "bbox": [round(max(xs) - min(xs), 2), round(max(ys) - min(ys), 2), round(max(zs) - min(zs), 2)],
+            "centroid": [round(v, 2) for v in centroid(dv)],
             "bytes": 8 + len(dv) * 12 + len(df) * 12,
         }
         print(f"  {key}: {len(verts)}v/{len(faces)}f -> {len(dv)}v/{len(df)}f  "
@@ -313,7 +453,7 @@ def main():
         manifest[key + "HeightMap"] = {
             "nTheta": 48, "nT": 32,
             "grid": [[round(v, 4) for v in row]
-                     for row in height_map([to_local(p) for p in raw[key][0]])],
+                     for row in height_map(local[key][0])],
         }
     with open(os.path.join(OUT, "heart-meshes.json"), "w") as f:
         json.dump(manifest, f)
